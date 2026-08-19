@@ -112,7 +112,8 @@ async function runPasswordResetTestSuite() {
     }
 
     // Update password, revoke sessions, increment sessionVersion
-    team.passwordHash = `hashed_${newPassword}`;
+    const crypto = await import('crypto');
+    team.passwordHash = crypto.createHash('sha256').update(newPassword).digest('hex');
     team.activeSessionId = null;
     team.sessionVersion += 1;
 
@@ -181,9 +182,11 @@ async function runPasswordResetTestSuite() {
   console.log('\n--- Phase 3: Login State Verification ---');
 
   function attemptTeamLogin(teamId: string, passwordInput: string) {
+    const crypto = require('crypto');
     const team = teamDatabase[teamId];
     if (!team) return { success: false, error: 'User not found' };
-    if (team.passwordHash !== `hashed_${passwordInput}`) {
+    const inputHash = crypto.createHash('sha256').update(passwordInput).digest('hex');
+    if (team.passwordHash !== inputHash) {
       return { success: false, error: 'auth/wrong-password' };
     }
     const newSessionId = `session_${Date.now()}`;

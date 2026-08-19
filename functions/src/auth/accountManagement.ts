@@ -347,8 +347,26 @@ export const resetTeamPassword = functions.https.onCall(async (data, context) =>
     }
   }
 
+  // Fallback 3: If no Auth user exists for this team yet, create it on-the-fly with the new password
   if (!targetUid) {
-    throw new functions.https.HttpsError('not-found', `Authentication user record not found for team '${teamId}'.`);
+    const normalizedUsername = (teamData.username || teamId).toLowerCase().trim();
+    const email = `${normalizedUsername}@hackathon.internal`;
+    try {
+      const newUser = await admin.auth().createUser({
+        email,
+        password: newPassword,
+        displayName: teamData.teamName || teamId,
+        disabled: teamData.status === 'disabled',
+      });
+      targetUid = newUser.uid;
+      await admin.auth().setCustomUserClaims(targetUid, {
+        role: 'team',
+        teamId: teamId,
+      });
+    } catch (createErr: any) {
+      console.error(`[resetTeamPassword] Could not resolve or create auth user for team ${teamId}:`, createErr);
+      throw new functions.https.HttpsError('not-found', `Authentication user record not found for team '${teamId}'.`);
+    }
   }
 
   try {
