@@ -306,32 +306,50 @@ export const resetTeamPassword = functions.https.onCall(async (data, context) =>
     throw new functions.https.HttpsError('invalid-argument', 'New password does not meet the required security rules. Must be at least 6 characters.');
   }
 
+  const cleanTeamId = String(teamId).trim();
   const db = admin.firestore();
-  const teamDoc = await db.collection('teams').doc(teamId).get();
+
+  // 1. Case-insensitive / alias document lookup
+  let teamDoc = await db.collection('teams').doc(cleanTeamId).get();
   if (!teamDoc.exists) {
-    throw new functions.https.HttpsError('not-found', `Team account '${teamId}' was not found.`);
+    teamDoc = await db.collection('teams').doc(cleanTeamId.toUpperCase()).get();
+  }
+  if (!teamDoc.exists) {
+    teamDoc = await db.collection('teams').doc(cleanTeamId.toLowerCase()).get();
+  }
+  if (!teamDoc.exists) {
+    const querySnap = await db.collection('teams').where('teamId', '==', cleanTeamId).limit(1).get();
+    if (!querySnap.empty) {
+      teamDoc = querySnap.docs[0];
+    }
   }
 
-  const teamData = teamDoc.data()!;
-  let targetUid = teamData.authUid || teamData.userUid;
+  if (!teamDoc.exists) {
+    throw new functions.https.HttpsError('not-found', `Team account '${cleanTeamId}' was not found in database.`);
+  }
+
+  const teamData = teamDoc.data() || {};
+  const canonicalTeamId = teamDoc.id;
+  let targetUid: string | null = teamData.authUid || teamData.userUid || null;
 
   // Fallback 1: Lookup user record by username in Firestore
   if (!targetUid) {
-    const normalizedUsername = (teamData.username || teamId).toLowerCase().trim();
+    const normalizedUsername = (teamData.username || cleanTeamId).toLowerCase().trim();
     const userQuery = await db.collection('users').where('username', '==', normalizedUsername).limit(1).get();
     if (!userQuery.empty) {
       targetUid = userQuery.docs[0].id;
     }
   }
 
-  // Fallback 2: Lookup user in Firebase Auth directly by email
+  // Fallback 2: Lookup user in Firebase Auth directly by email patterns
   if (!targetUid) {
-    const normalizedUsername = (teamData.username || teamId).toLowerCase().trim();
+    const normalizedUsername = (teamData.username || cleanTeamId).toLowerCase().trim();
     const emailsToTry = [
       `${normalizedUsername}@hackathon.internal`,
       `${normalizedUsername}@hackathon.local`,
-      `${teamId.toLowerCase()}@hackathon.internal`,
-      `${teamId.toLowerCase()}@hackathon.local`,
+      `${cleanTeamId.toLowerCase()}@hackathon.internal`,
+      `${cleanTeamId.toLowerCase()}@hackathon.local`,
+      `${cleanTeamId.toUpperCase()}@hackathon.internal`,
     ];
 
     for (const em of emailsToTry) {
@@ -347,65 +365,91 @@ export const resetTeamPassword = functions.https.onCall(async (data, context) =>
     }
   }
 
-  // Fallback 3: If no Auth user exists for this team yet, create it on-the-fly with the new password
-  if (!targetUid) {
-    const normalizedUsername = (teamData.username || teamId).toLowerCase().trim();
-    const email = `${normalizedUsername}@hackathon.internal`;
-    try {
-      const newUser = await admin.auth().createUser({
-        email,
-        password: newPassword,
-        displayName: teamData.teamName || teamId,
-        disabled: teamData.status === 'disabled',
-      });
-      targetUid = newUser.uid;
-      await admin.auth().setCustomUserClaims(targetUid, {
-        role: 'team',
-        teamId: teamId,
-      });
-    } catch (createErr: any) {
-      console.error(`[resetTeamPassword] Could not resolve or create auth user for team ${teamId}:`, createErr);
-      throw new functions.https.HttpsError('not-found', `Authentication user record not found for team '${teamId}'.`);
-    }
-  }
-
   try {
-    // 1. Update password in Firebase Authentication
-    await admin.auth().updateUser(targetUid, { password: newPassword });
+    // If targetUid exists, attempt to update password
+    if (targetUid) {
+      try {
+        await admin.auth().updateUser(targetUid, { password: newPassword });
+      } catch (authUpdateErr: any) {
+        console.warn(`[resetTeamPassword] updateUser failed on targetUid ${targetUid}:`, authUpdateErr.code);
+        if (authUpdateErr.code === 'auth/user-not-found') {
+          targetUid = null; // Recreate or lookup below
+        } else {
+          throw authUpdateErr;
+        }
+      }
+    }
 
-    // 2. Revoke refresh tokens to force re-authentication
-    await admin.auth().revokeRefreshTokens(targetUid);
+    // Fallback 3: If user did not exist or was deleted, provision/sync the Auth user
+    if (!targetUid) {
+      const normalizedUsername = (teamData.username || cleanTeamId).toLowerCase().trim();
+      const email = `${normalizedUsername}@hackathon.internal`;
+      try {
+        const newUser = await admin.auth().createUser({
+          email,
+          password: newPassword,
+          displayName: teamData.teamName || canonicalTeamId,
+          disabled: teamData.status === 'disabled',
+        });
+        targetUid = newUser.uid;
+        await admin.auth().setCustomUserClaims(targetUid, {
+          role: 'team',
+          teamId: canonicalTeamId,
+        });
+      } catch (createErr: any) {
+        if (createErr.code === 'auth/email-already-in-use') {
+          const existing = await admin.auth().getUserByEmail(email);
+          targetUid = existing.uid;
+          await admin.auth().updateUser(targetUid, { password: newPassword });
+        } else {
+          throw createErr;
+        }
+      }
+    }
 
-    // 3. Clear active session in Firestore
+    // Revoke refresh tokens to invalidate current sessions
+    if (targetUid) {
+      await admin.auth().revokeRefreshTokens(targetUid).catch(() => {});
+    }
+
+    // Synchronize Firestore user & team document
     const now = admin.firestore.FieldValue.serverTimestamp();
-    await db.collection('users').doc(targetUid).set({
-      activeSessionId: null,
-      sessionVersion: admin.firestore.FieldValue.increment(1),
-      updatedAt: now,
-    }, { merge: true });
+    if (targetUid) {
+      await db.collection('users').doc(targetUid).set({
+        activeSessionId: null,
+        sessionVersion: admin.firestore.FieldValue.increment(1),
+        teamId: canonicalTeamId,
+        username: teamData.username || cleanTeamId.toLowerCase(),
+        status: teamData.status || 'active',
+        role: 'team',
+        updatedAt: now,
+      }, { merge: true });
+    }
 
-    // 4. Ensure authUid is properly synced on the team document
-    await db.collection('teams').doc(teamId).set({
+    await db.collection('teams').doc(canonicalTeamId).set({
       authUid: targetUid,
       updatedAt: now,
     }, { merge: true });
 
-    // 5. Audit Log
-    await logAudit(context.auth!.uid, context.auth!.token.email, 'Password Reset', 'account', teamId, {
-      teamId,
+    // Server-side audit log
+    await logAudit(context.auth!.uid, context.auth!.token.email, 'Password Reset', 'account', canonicalTeamId, {
+      teamId: canonicalTeamId,
       userUid: targetUid,
     });
 
     return { success: true, message: 'Password updated successfully.' };
   } catch (error: any) {
-    console.error(`[resetTeamPassword] Error resetting password for team ${teamId}:`, error);
+    console.error(`[resetTeamPassword] Firebase error for team ${cleanTeamId}:`, {
+      code: error.code,
+      message: error.message,
+    });
     if (error.code === 'auth/weak-password') {
       throw new functions.https.HttpsError('invalid-argument', 'New password does not meet the required security rules. Must be at least 6 characters.');
     }
     if (error instanceof functions.https.HttpsError) {
       throw error;
     }
-    throw new functions.https.HttpsError('internal', error.message || 'Password reset failed. Please try again.');
+    throw new functions.https.HttpsError('unknown', error.message || 'Password reset failed in Firebase Auth.');
   }
 });
 

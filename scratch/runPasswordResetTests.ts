@@ -1,4 +1,5 @@
 import { formatPasswordResetError, formatTeamCreationError } from '../src/services/accounts.service';
+import crypto from 'crypto';
 
 interface TestResult {
   id: number;
@@ -112,7 +113,6 @@ async function runPasswordResetTestSuite() {
     }
 
     // Update password, revoke sessions, increment sessionVersion
-    const crypto = await import('crypto');
     team.passwordHash = crypto.createHash('sha256').update(newPassword).digest('hex');
     team.activeSessionId = null;
     team.sessionVersion += 1;
@@ -124,7 +124,7 @@ async function runPasswordResetTestSuite() {
   recordTest(
     6,
     'Valid Password Reset Execution',
-    resetResult.success === true && teamDatabase.TEAM008.passwordHash === 'hashed_NewSecurePass@2026',
+    resetResult.success === true && teamDatabase.TEAM008.passwordHash === crypto.createHash('sha256').update('NewSecurePass@2026').digest('hex'),
     `Message: "${resetResult.message}", Updated Hash: ${teamDatabase.TEAM008.passwordHash}`
   );
 
@@ -182,7 +182,6 @@ async function runPasswordResetTestSuite() {
   console.log('\n--- Phase 3: Login State Verification ---');
 
   function attemptTeamLogin(teamId: string, passwordInput: string) {
-    const crypto = require('crypto');
     const team = teamDatabase[teamId];
     if (!team) return { success: false, error: 'User not found' };
     const inputHash = crypto.createHash('sha256').update(passwordInput).digest('hex');
