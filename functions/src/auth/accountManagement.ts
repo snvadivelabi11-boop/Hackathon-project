@@ -327,12 +327,23 @@ export const resetTeamPassword = functions.https.onCall(async (data, context) =>
   // Fallback 2: Lookup user in Firebase Auth directly by email
   if (!targetUid) {
     const normalizedUsername = (teamData.username || teamId).toLowerCase().trim();
-    const email = `${normalizedUsername}@hackathon.local`;
-    try {
-      const authUser = await admin.auth().getUserByEmail(email);
-      targetUid = authUser.uid;
-    } catch {
-      // User not found by email
+    const emailsToTry = [
+      `${normalizedUsername}@hackathon.internal`,
+      `${normalizedUsername}@hackathon.local`,
+      `${teamId.toLowerCase()}@hackathon.internal`,
+      `${teamId.toLowerCase()}@hackathon.local`,
+    ];
+
+    for (const em of emailsToTry) {
+      try {
+        const authUser = await admin.auth().getUserByEmail(em);
+        if (authUser && authUser.uid) {
+          targetUid = authUser.uid;
+          break;
+        }
+      } catch {
+        // Continue trying next pattern
+      }
     }
   }
 
