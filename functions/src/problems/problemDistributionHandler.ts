@@ -271,7 +271,7 @@ export const deleteProblemStatement = functions.https.onCall(async (data, contex
 
 import { callOpenRouterAI } from '../config/openrouter';
 
-export const parseProblemStatementsAI = functions.https.onCall(async (data, context) => {
+export const parseProblemStatementsAI = functions.runWith({ secrets: ['OPENROUTER_API_KEY'], timeoutSeconds: 300, memory: '1GB' }).https.onCall(async (data, context) => {
   await verifyAdmin(context);
 
   const { rawText, fileName } = data;

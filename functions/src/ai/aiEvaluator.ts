@@ -109,7 +109,7 @@ async function fetchSafeGitHubContext(repoUrl: string): Promise<{
  * 9. Confidence Assessment: Level (HIGH/MEDIUM/LOW) + Reason.
  * 10. AI Score Recommendation Only: Admin Final Score is authoritative.
  */
-export const evaluateWithAI = functions.https.onCall(async (data, context) => {
+export const evaluateWithAI = functions.runWith({ secrets: ['OPENROUTER_API_KEY'], timeoutSeconds: 300, memory: '1GB' }).https.onCall(async (data, context) => {
   verifyAdmin(context);
 
   const { submissionId, teamId, roundId } = data;
