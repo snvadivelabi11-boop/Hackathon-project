@@ -44,7 +44,7 @@ export function generateLocalUsername(name: string): string {
 }
 
 /**
- * Maps Firebase Auth and Firestore error codes to friendly, safe user messages
+ * Maps Firebase Auth and Firestore error codes to friendly, safe user messages for Team Creation
  */
 export function formatTeamCreationError(error: any): string {
   console.error('[TeamCreation] Detailed error:', error);
@@ -52,7 +52,7 @@ export function formatTeamCreationError(error: any): string {
   if (!error) return 'Failed to create team account. Please try again.';
 
   const code = error.code || '';
-  const msg = error.message || '';
+  const msg = error.message || error.details || '';
 
   if (code === 'auth/email-already-in-use' || msg.includes('already exists') || msg.includes('already-exists')) {
     return 'An account with this generated username already exists. Please modify the leader name.';
@@ -63,7 +63,7 @@ export function formatTeamCreationError(error: any): string {
   if (code === 'auth/weak-password' || msg.includes('at least 6 characters') || msg.includes('weak-password')) {
     return 'Password must be at least 6 characters.';
   }
-  if (code === 'permission-denied' || msg.includes('permission-denied') || msg.includes('Permission denied')) {
+  if (code === 'permission-denied' || msg.includes('permission-denied') || msg.includes('Permission denied') || msg.includes('privileges required')) {
     return 'Permission denied. You must have Administrator privileges.';
   }
   if (code === 'auth/network-request-failed' || code === 'unavailable' || msg.includes('network') || msg.includes('offline')) {
@@ -77,6 +77,85 @@ export function formatTeamCreationError(error: any): string {
   }
 
   return 'Team account creation failed. Please check network and permissions.';
+}
+
+/**
+ * Maps Firebase Auth and Cloud Function error codes to specific messages for Password Reset
+ */
+export function formatPasswordResetError(error: any): string {
+  console.error('[PasswordReset] Detailed error:', error);
+
+  if (!error) return 'Password reset failed. Please try again.';
+
+  const code = error.code || '';
+  const msg = error.message || error.details || '';
+
+  if (code === 'auth/weak-password' || msg.includes('at least 6 characters') || msg.includes('weak-password') || msg.includes('security rules')) {
+    return 'New password does not meet the required security rules. Must be at least 6 characters.';
+  }
+  if (code === 'permission-denied' || msg.includes('permission-denied') || msg.includes('Permission denied') || msg.includes('privileges required')) {
+    return 'You do not have permission to reset this password.';
+  }
+  if (code === 'not-found' || msg.includes('not found') || msg.includes('not-found')) {
+    return 'Team account was not found.';
+  }
+  if (code === 'auth/network-request-failed' || code === 'unavailable' || msg.includes('network') || msg.includes('offline')) {
+    return 'Network connection error. Please verify your internet connection.';
+  }
+  if (code === 'unauthenticated' || msg.includes('unauthenticated')) {
+    return 'Session expired. Please log in again as Admin.';
+  }
+  if (msg && msg !== 'internal' && msg !== 'INTERNAL' && !msg.startsWith('INTERNAL')) {
+    return msg;
+  }
+
+  return 'Password reset failed. Please try again.';
+}
+
+/**
+ * Maps error codes for Account Activation/Deactivation operations
+ */
+export function formatAccountStatusError(error: any): string {
+  console.error('[AccountStatus] Detailed error:', error);
+  if (!error) return 'Failed to update account status. Please try again.';
+
+  const code = error.code || '';
+  const msg = error.message || error.details || '';
+
+  if (code === 'permission-denied' || msg.includes('permission-denied') || msg.includes('Permission denied')) {
+    return 'Permission denied. Administrator privileges required.';
+  }
+  if (code === 'not-found' || msg.includes('not found')) {
+    return 'Team account was not found.';
+  }
+  if (msg && msg !== 'internal' && msg !== 'INTERNAL' && !msg.startsWith('INTERNAL')) {
+    return msg;
+  }
+
+  return 'Failed to update account status. Please check network and permissions.';
+}
+
+/**
+ * Maps error codes for Team Deletion operations
+ */
+export function formatTeamDeletionError(error: any): string {
+  console.error('[TeamDeletion] Detailed error:', error);
+  if (!error) return 'Failed to delete team account. Please try again.';
+
+  const code = error.code || '';
+  const msg = error.message || error.details || '';
+
+  if (code === 'permission-denied' || msg.includes('permission-denied')) {
+    return 'Permission denied. Administrator privileges required.';
+  }
+  if (code === 'not-found' || msg.includes('not found')) {
+    return 'Team account was not found.';
+  }
+  if (msg && msg !== 'internal' && msg !== 'INTERNAL' && !msg.startsWith('INTERNAL')) {
+    return msg;
+  }
+
+  return 'Team deletion failed. Please try again.';
 }
 
 /**
@@ -383,14 +462,22 @@ export async function enableTeam(teamId: string): Promise<void> {
  * Resets a team password
  */
 export async function resetTeamPassword(teamId: string, newPassword: string): Promise<void> {
-  if (newPassword.length < 6) throw new Error('Password must be at least 6 characters.');
+  const cleanId = (teamId || '').trim();
+  const cleanPassword = (newPassword || '').trim();
+
+  if (!cleanId) {
+    throw new Error('Team ID is required.');
+  }
+  if (!cleanPassword || cleanPassword.length < 6) {
+    throw new Error('New password does not meet the required security rules. Must be at least 6 characters.');
+  }
 
   try {
     const fn = httpsCallable(functions, 'resetTeamPassword');
-    await fn({ teamId, newPassword });
+    await fn({ teamId: cleanId, newPassword: cleanPassword });
   } catch (err: any) {
     console.warn('[AccountsService] resetTeamPassword Cloud Function failed:', err);
-    throw new Error(formatTeamCreationError(err));
+    throw new Error(formatPasswordResetError(err));
   }
 }
 

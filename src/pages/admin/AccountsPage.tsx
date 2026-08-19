@@ -102,14 +102,20 @@ export const AccountsPage: React.FC = () => {
 
   const handleResetPassword = async (values: any) => {
     if (!selectedTeam) return;
+    const cleanPassword = (values.newPassword || '').trim();
+    if (!cleanPassword || cleanPassword.length < 6) {
+      message.error('New password does not meet the required security rules. Must be at least 6 characters.');
+      return;
+    }
+
     setLoadingAction(true);
     try {
-      await resetTeamPassword(selectedTeam.teamId, values.newPassword);
-      message.success(`Password reset successfully for ${selectedTeam.teamId}.`);
+      await resetTeamPassword(selectedTeam.teamId, cleanPassword);
+      message.success('Password updated successfully.');
       setIsResetPassModalOpen(false);
       resetPassForm.resetFields();
     } catch (err: any) {
-      message.error(err.message || 'Failed to reset password.');
+      message.error(err.message || 'Password reset failed. Please try again.');
     } finally {
       setLoadingAction(false);
     }
