@@ -147,8 +147,128 @@ export async function verifyAdminStatus(fbUser: FirebaseUser): Promise<{ isAdmin
   }
 }
 
+import { runTransaction } from 'firebase/firestore';
+import { DeviceSession } from '../types';
+
+export const MAX_USER_DEVICES = 6;
+
 /**
- * Real Firebase Team Authentication
+ * Registers a device session with atomic concurrency protection and 6-device limit enforcement
+ */
+export async function registerDeviceSession(
+  uid: string,
+  sessionId: string,
+  role: 'team' | 'admin',
+  userAgent: string = ''
+): Promise<{ success: boolean; activeCount: number }> {
+  const userDocRef = doc(db, 'users', uid);
+  const cleanUA = userAgent || (typeof navigator !== 'undefined' ? navigator.userAgent : 'Browser Device');
+  const nowIso = new Date().toISOString();
+
+  let activeCount = 1;
+
+  await runTransaction(db, async (transaction) => {
+    const userSnap = await transaction.get(userDocRef);
+
+    let existingSessions: DeviceSession[] = [];
+    let isUserDisabled = false;
+
+    if (userSnap.exists()) {
+      const data = userSnap.data() as any;
+      if (data.status === 'disabled') {
+        isUserDisabled = true;
+      }
+      if (Array.isArray(data.activeSessions)) {
+        existingSessions = data.activeSessions.filter(
+          (s: DeviceSession) => s && s.sessionId && s.status === 'active'
+        );
+      }
+    }
+
+    if (isUserDisabled) {
+      throw new Error('This account has been disabled. Please contact the administrator.');
+    }
+
+    // Check if this exact session ID is already registered
+    const existingIndex = existingSessions.findIndex((s) => s.sessionId === sessionId);
+    if (existingIndex >= 0) {
+      existingSessions[existingIndex].lastSeenAt = nowIso;
+      activeCount = existingSessions.length;
+      transaction.set(
+        userDocRef,
+        {
+          activeSessions: existingSessions,
+          activeSessionId: sessionId,
+          lastLoginAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+      return;
+    }
+
+    // Enforce maximum 6 active devices limit for team participants
+    if (role === 'team' && existingSessions.length >= MAX_USER_DEVICES) {
+      throw new Error('Maximum 6 active devices reached. Please logout from another device.');
+    }
+
+    const newSession: DeviceSession = {
+      sessionId,
+      userId: uid,
+      userAgent: cleanUA,
+      createdAt: nowIso,
+      lastSeenAt: nowIso,
+      status: 'active',
+    };
+
+    const updatedSessions = [...existingSessions, newSession];
+    activeCount = updatedSessions.length;
+
+    transaction.set(
+      userDocRef,
+      {
+        activeSessions: updatedSessions,
+        activeSessionId: sessionId,
+        lastLoginAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  });
+
+  return { success: true, activeCount };
+}
+
+/**
+ * Removes a specific device session on explicit logout, freeing the slot
+ */
+export async function removeDeviceSession(uid: string, sessionId: string): Promise<void> {
+  if (!uid || !sessionId) return;
+  const userDocRef = doc(db, 'users', uid);
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const userSnap = await transaction.get(userDocRef);
+      if (!userSnap.exists()) return;
+
+      const data = userSnap.data() as any;
+      if (Array.isArray(data.activeSessions)) {
+        const remainingSessions = data.activeSessions.filter(
+          (s: DeviceSession) => s && s.sessionId !== sessionId && s.status === 'active'
+        );
+        transaction.update(userDocRef, {
+          activeSessions: remainingSessions,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    });
+  } catch (err) {
+    console.warn('[AuthService] Could not remove device session:', err);
+  }
+}
+
+/**
+ * Real Firebase Team Authentication (Supports up to 6 concurrent devices per team)
  * Accepts Team ID or Username and Password.
  */
 export async function loginTeam(identifier: string, password: string): Promise<UserProfile> {
@@ -159,7 +279,6 @@ export async function loginTeam(identifier: string, password: string): Promise<U
 
   let email = trimmed;
   if (!email.includes('@')) {
-    // Check if identifier is Team ID
     try {
       const teamDoc = await getDoc(doc(db, 'teams', trimmed.toUpperCase())).catch(() => null);
       if (teamDoc && teamDoc.exists() && teamDoc.data()?.username) {
@@ -180,26 +299,27 @@ export async function loginTeam(identifier: string, password: string): Promise<U
     const roleClaim = tokenResult.claims.role as string | undefined;
     const teamIdClaim = tokenResult.claims.teamId as string | undefined;
 
+    const sessionId = generateSessionId();
+
+    // Register device session atomically and enforce 6-device limit
+    try {
+      await registerDeviceSession(fbUser.uid, sessionId, 'team');
+      localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+    } catch (sessionErr: any) {
+      await signOut(auth).catch(() => {});
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+      throw sessionErr;
+    }
+
     const userDocRef = doc(db, 'users', fbUser.uid);
     const userSnap = await getDoc(userDocRef).catch(() => null);
-
-    const sessionId = generateSessionId();
-    localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
 
     if (userSnap && userSnap.exists()) {
       const data = userSnap.data() as UserProfile;
       if (data.status === 'disabled') {
         await signOut(auth);
+        localStorage.removeItem(SESSION_STORAGE_KEY);
         throw new Error('This team account has been disabled. Please contact the administrator.');
-      }
-
-      try {
-        await updateDoc(userDocRef, {
-          activeSessionId: sessionId,
-          lastLoginAt: serverTimestamp(),
-        });
-      } catch (err) {
-        console.warn('Could not update activeSessionId in Firestore:', err);
       }
 
       return {
@@ -225,21 +345,22 @@ export async function loginTeam(identifier: string, password: string): Promise<U
       };
 
       try {
-        await setDoc(userDocRef, profile);
+        await setDoc(userDocRef, profile, { merge: true });
       } catch (err) {
         console.warn('Could not create user document in Firestore:', err);
       }
       return profile;
     }
   } catch (error: any) {
+    if (error.message && error.message.includes('Maximum 6 active devices reached')) {
+      throw error;
+    }
     throw new Error(formatFirebaseAuthError(error));
   }
 }
 
 /**
- * Real Firebase Administrator Authentication
- * Uses the existing Admin account created in Firebase Authentication.
- * Resiliently verifies Admin status across Custom Claims, admin collection, admins collection, and users collection.
+ * Real Firebase Administrator Authentication (Supports concurrent Admin devices)
  */
 export async function loginAdmin(email: string, password: string): Promise<UserProfile> {
   const trimmedEmail = email.trim();
@@ -271,6 +392,9 @@ export async function loginAdmin(email: string, password: string): Promise<UserP
     }
 
     const sessionId = generateSessionId();
+
+    // Register admin device session atomically
+    await registerDeviceSession(fbUser.uid, sessionId, 'admin');
     localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
 
     const userDocRef = doc(db, 'users', fbUser.uid);
@@ -326,15 +450,13 @@ export async function loginUser(identifier: string, password: string): Promise<U
 /**
  * Signs out from Firebase Authentication and clears local storage session
  */
-export async function logoutUser(uid?: string): Promise<void> {
+export async function logoutUser(uid?: string, sessionId?: string | null): Promise<void> {
+  const activeSid = sessionId || localStorage.getItem(SESSION_STORAGE_KEY);
   localStorage.removeItem(SESSION_STORAGE_KEY);
-  if (uid) {
-    try {
-      const userDocRef = doc(db, 'users', uid);
-      await updateDoc(userDocRef, { activeSessionId: null });
-    } catch {
-      // Ignore Firestore write error during sign out
-    }
+
+  if (uid && activeSid) {
+    await removeDeviceSession(uid, activeSid);
   }
+
   await signOut(auth);
 }

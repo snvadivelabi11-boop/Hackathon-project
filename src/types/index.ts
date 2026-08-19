@@ -25,6 +25,15 @@ export type ProblemStatus =
 
 export type DistributionStatus = 'DRAFT' | 'PUBLISHED';
 
+export interface DeviceSession {
+  sessionId: string;
+  userId: string;
+  userAgent?: string;
+  createdAt: string;
+  lastSeenAt: string;
+  status: 'active' | 'revoked';
+}
+
 export interface UserProfile {
   uid: string;
   role: UserRole;
@@ -34,7 +43,8 @@ export interface UserProfile {
   displayName: string;
   status: AccountStatus;
   sessionVersion: number;
-  activeSessionId: string | null;
+  activeSessionId?: string | null;
+  activeSessions?: DeviceSession[];
   createdAt: any;
   updatedAt: any;
   lastLoginAt?: any;

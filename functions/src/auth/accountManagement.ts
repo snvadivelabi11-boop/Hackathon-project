@@ -412,10 +412,11 @@ export const resetTeamPassword = functions.https.onCall(async (data, context) =>
       await admin.auth().revokeRefreshTokens(targetUid).catch(() => {});
     }
 
-    // Synchronize Firestore user & team document
+    // Synchronize Firestore user & team document (clearing activeSessions for security)
     const now = admin.firestore.FieldValue.serverTimestamp();
     if (targetUid) {
       await db.collection('users').doc(targetUid).set({
+        activeSessions: [],
         activeSessionId: null,
         sessionVersion: admin.firestore.FieldValue.increment(1),
         teamId: canonicalTeamId,
@@ -454,7 +455,7 @@ export const resetTeamPassword = functions.https.onCall(async (data, context) =>
 });
 
 /**
- * Forces logout on a team by invalidating their active session and revoking refresh tokens.
+ * Forces logout on a team by invalidating all their active sessions and revoking refresh tokens.
  */
 export const forceLogout = functions.https.onCall(async (data, context) => {
   await verifyAdmin(context);
@@ -468,54 +469,90 @@ export const forceLogout = functions.https.onCall(async (data, context) => {
   const userUid = teamDoc.data()!.authUid || teamDoc.data()!.userUid;
 
   if (userUid) {
-    await admin.auth().revokeRefreshTokens(userUid);
+    await admin.auth().revokeRefreshTokens(userUid).catch(() => {});
     const now = admin.firestore.FieldValue.serverTimestamp();
-    await db.collection('users').doc(userUid).update({
+    await db.collection('users').doc(userUid).set({
+      activeSessions: [],
       activeSessionId: null,
       sessionVersion: admin.firestore.FieldValue.increment(1),
       updatedAt: now,
-    });
+    }, { merge: true });
   }
 
   await logAudit(context.auth!.uid, context.auth!.token.email, 'Force Logout', 'account', teamId);
-  return { success: true, message: `Active session terminated for ${teamId}.` };
+  return { success: true, message: `All active device sessions terminated for ${teamId}.` };
 });
 
 /**
- * Registers a new active session on login, invalidating any previous session.
+ * Registers a new active session on login, enforcing a 6-device limit for team users.
  */
 export const registerActiveSession = functions.https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
   }
 
-  const { sessionId } = data;
+  const { sessionId, userAgent } = data;
   if (!sessionId) throw new functions.https.HttpsError('invalid-argument', 'sessionId is required.');
 
   const uid = context.auth.uid;
   const db = admin.firestore();
-
   const userRef = db.collection('users').doc(uid);
-  const userDoc = await userRef.get();
 
-  if (!userDoc.exists) {
-    throw new functions.https.HttpsError('not-found', 'User record not found.');
-  }
+  return await db.runTransaction(async (transaction) => {
+    const userDoc = await transaction.get(userRef);
 
-  const userData = userDoc.data()!;
-  if (userData.status === 'disabled') {
-    throw new functions.https.HttpsError('permission-denied', 'Account is disabled. Please contact administrator.');
-  }
+    if (!userDoc.exists) {
+      throw new functions.https.HttpsError('not-found', 'User record not found.');
+    }
 
-  const now = admin.firestore.FieldValue.serverTimestamp();
-  await userRef.update({
-    activeSessionId: sessionId,
-    sessionVersion: admin.firestore.FieldValue.increment(1),
-    lastLoginAt: now,
-    updatedAt: now,
+    const userData = userDoc.data()!;
+    if (userData.status === 'disabled') {
+      throw new functions.https.HttpsError('permission-denied', 'Account is disabled. Please contact administrator.');
+    }
+
+    const isTeam = userData.role === 'team' || (!userData.role && !context.auth?.token.admin);
+    const existingSessions: any[] = Array.isArray(userData.activeSessions)
+      ? userData.activeSessions.filter((s: any) => s && s.status === 'active')
+      : [];
+
+    const existingIndex = existingSessions.findIndex((s: any) => s.sessionId === sessionId);
+    if (existingIndex >= 0) {
+      existingSessions[existingIndex].lastSeenAt = new Date().toISOString();
+      transaction.update(userRef, {
+        activeSessions: existingSessions,
+        lastLoginAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return { success: true, sessionId, activeDevicesCount: existingSessions.length };
+    }
+
+    // Enforce 6 devices limit for teams
+    if (isTeam && existingSessions.length >= 6) {
+      throw new functions.https.HttpsError(
+        'resource-exhausted',
+        'Maximum 6 active devices reached. Please logout from another device.'
+      );
+    }
+
+    const newSession = {
+      sessionId,
+      userId: uid,
+      userAgent: userAgent || 'Unknown Device',
+      createdAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      status: 'active',
+    };
+
+    const updatedSessions = [...existingSessions, newSession];
+    const now = admin.firestore.FieldValue.serverTimestamp();
+
+    transaction.update(userRef, {
+      activeSessions: updatedSessions,
+      lastLoginAt: now,
+      updatedAt: now,
+    });
+
+    return { success: true, sessionId, activeDevicesCount: updatedSessions.length };
   });
-
-  return { success: true, sessionId };
 });
 
 /**

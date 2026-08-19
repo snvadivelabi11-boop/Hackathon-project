@@ -160,12 +160,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async (): Promise<void> => {
     const currentUid = user?.uid;
+    const currentSid = user?.activeSessionId || localStorage.getItem(SESSION_STORAGE_KEY);
     setUser(null);
     try {
       localStorage.removeItem('hackathon_user');
       localStorage.removeItem(SESSION_STORAGE_KEY);
     } catch {}
-    await logoutUser(currentUid);
+    await logoutUser(currentUid, currentSid);
   };
 
   const role = user?.role || null;
