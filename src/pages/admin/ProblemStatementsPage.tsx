@@ -57,12 +57,14 @@ import {
   ProjectOutlined,
   ExclamationCircleOutlined,
   SaveOutlined,
+  FileSearchOutlined,
 } from '@ant-design/icons';
 import {
   subscribeToProblemStatements,
   saveProblemStatement,
 } from '../../services/problems.service';
 import { subscribeToTeams } from '../../services/accounts.service';
+import { CsvProblemAnalyzerModal } from '../../components/admin/CsvProblemAnalyzerModal';
 import {
   extractTextFromFile,
   parseProblemStatementsText,
@@ -120,6 +122,7 @@ export const ProblemStatementsPage: React.FC = () => {
   const [isAddEditModalOpen, setIsAddEditModalOpen] = useState(false);
   const [editingStatement, setEditingStatement] = useState<ProblemStatement | null>(null);
   const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
+  const [isCsvAnalyzerOpen, setIsCsvAnalyzerOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [isPubHistoryDrawerOpen, setIsPubHistoryDrawerOpen] = useState(false);
   const [isViewDrawerOpen, setIsViewDrawerOpen] = useState(false);
@@ -672,6 +675,15 @@ export const ProblemStatementsPage: React.FC = () => {
         </div>
 
         <Space wrap>
+          <Button
+            type="primary"
+            icon={<FileSearchOutlined />}
+            onClick={() => setIsCsvAnalyzerOpen(true)}
+            style={{ borderRadius: 8, background: '#1677ff', borderColor: '#1677ff', fontWeight: 600 }}
+          >
+            Analyze & Import CSV
+          </Button>
+
           <Button
             type="primary"
             icon={<RobotOutlined />}
@@ -1440,6 +1452,21 @@ export const ProblemStatementsPage: React.FC = () => {
           </div>
         )}
       </Drawer>
+
+      {/* ========================================================================= */}
+      {/* CSV PROBLEM STATEMENT ANALYZER MODAL                                      */}
+      {/* ========================================================================= */}
+      <CsvProblemAnalyzerModal
+        open={isCsvAnalyzerOpen}
+        onClose={() => setIsCsvAnalyzerOpen(false)}
+        existingProblems={statements}
+        onImportComplete={() => {
+          // Statements automatically refresh via onSnapshot
+        }}
+        onNavigateToDistribution={() => {
+          setActiveTab('preview');
+        }}
+      />
     </div>
   );
 };
