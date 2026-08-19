@@ -5,7 +5,8 @@ import {
   serverTimestamp,
   getDocs,
 } from 'firebase/firestore';
-import { db, auth } from '../firebase/config';
+import { httpsCallable } from 'firebase/functions';
+import { db, auth, functions } from '../firebase/config';
 import { ProblemStatement } from '../types';
 
 export interface AnalyzedQuestionItem {
@@ -22,6 +23,13 @@ export interface AnalyzedQuestionItem {
   validationNotes: string;
   isExistingDuplicate?: boolean;
   rowNumber: number;
+  // AI Analysis enrichments
+  aiAnalyzed?: boolean;
+  aiQualityScore?: number; // 1-10
+  aiIssues?: string[];
+  aiSuggestions?: string[];
+  aiDetectedCategory?: string;
+  aiDetectedDifficulty?: 'EASY' | 'MEDIUM' | 'HARD';
 }
 
 export interface CsvValidationSummary {
@@ -30,6 +38,24 @@ export interface CsvValidationSummary {
   invalidRows: number;
   duplicateQuestions: number;
   emptyQuestions: number;
+  aiAnalyzedCount?: number;
+}
+
+export interface CsvAiAnalysisResponse {
+  success: boolean;
+  aiSuccess: boolean;
+  aiError?: string | null;
+  wasTruncated?: boolean;
+  totalAnalyzed: number;
+  results: Array<{
+    sequence: number;
+    isValid: boolean;
+    qualityScore: number;
+    issues: string[];
+    suggestions: string[];
+    detectedCategory: string;
+    detectedDifficulty: 'EASY' | 'MEDIUM' | 'HARD';
+  }>;
 }
 
 export interface CsvAnalysisResult {
@@ -44,6 +70,9 @@ export interface CsvAnalysisResult {
   questions: AnalyzedQuestionItem[];
   validItemsToSave: AnalyzedQuestionItem[];
   fileName: string;
+  aiAnalysisPerformed?: boolean;
+  aiAnalysisSuccess?: boolean;
+  aiAnalysisError?: string | null;
 }
 
 /**
@@ -459,6 +488,63 @@ export function analyzeCsvProblemStatements(
 }
 
 /**
+ * Calls Cloud Function analyzeCsvProblemsAI to perform AI review on parsed CSV questions
+ */
+export async function requestCsvAiAnalysis(
+  validQuestions: AnalyzedQuestionItem[],
+  fileName: string
+): Promise<CsvAiAnalysisResponse> {
+  const fn = httpsCallable<any, CsvAiAnalysisResponse>(functions, 'analyzeCsvProblemsAI');
+  const payload = {
+    fileName,
+    questions: validQuestions.map((q) => ({
+      sequence: q.sequence,
+      title: q.title,
+      description: q.description || q.title,
+      category: q.category,
+    })),
+  };
+  const res = await fn(payload);
+  return res.data;
+}
+
+/**
+ * Merges AI analysis results into the question items
+ */
+export function mergeAiAnalysisIntoQuestions(
+  questions: AnalyzedQuestionItem[],
+  aiResponse: CsvAiAnalysisResponse
+): AnalyzedQuestionItem[] {
+  if (!aiResponse || !aiResponse.results) return questions;
+  const resultMap = new Map<number, typeof aiResponse.results[0]>();
+  aiResponse.results.forEach((r) => resultMap.set(r.sequence, r));
+
+  return questions.map((q) => {
+    const aiItem = resultMap.get(q.sequence);
+    if (!aiItem) return q;
+
+    const notesParts = [q.validationNotes];
+    if (aiItem.issues && aiItem.issues.length > 0) {
+      notesParts.push(`AI Issues: ${aiItem.issues.join('; ')}`);
+    }
+
+    return {
+      ...q,
+      aiAnalyzed: true,
+      aiQualityScore: aiItem.qualityScore,
+      aiIssues: aiItem.issues,
+      aiSuggestions: aiItem.suggestions,
+      aiDetectedCategory: aiItem.detectedCategory,
+      aiDetectedDifficulty: aiItem.detectedDifficulty,
+      validationNotes: notesParts.join(' | '),
+      // If AI detected a category and user didn't provide one, enrich category
+      category: q.category || (aiItem.detectedCategory !== 'General' ? aiItem.detectedCategory : q.category),
+      difficulty: q.difficulty || aiItem.detectedDifficulty,
+    };
+  });
+}
+
+/**
  * Persists validated questions to Firestore in an atomic batch
  */
 export async function saveAnalyzedProblemsToFirestore(
@@ -483,7 +569,7 @@ export async function saveAnalyzedProblemsToFirestore(
     const docId = `PS${String(seq).padStart(3, '0')}`;
     const docRef = doc(db, 'problemStatements', docId);
 
-    batch.set(docRef, {
+    const docData: any = {
       statementId: docId,
       title: item.title,
       description: item.description,
@@ -500,8 +586,19 @@ export async function saveAnalyzedProblemsToFirestore(
       updatedAt: now,
       createdBy: adminEmail,
       creatorUid: adminUid,
-    }, { merge: true });
+    };
 
+    if (item.aiAnalyzed) {
+      docData.aiAnalyzed = true;
+      docData.aiProcessed = true;
+      if (item.aiQualityScore !== undefined) docData.aiQualityScore = item.aiQualityScore;
+      if (item.aiIssues && item.aiIssues.length > 0) docData.aiIssues = item.aiIssues;
+      if (item.aiSuggestions && item.aiSuggestions.length > 0) docData.aiSuggestions = item.aiSuggestions;
+      if (item.aiDetectedCategory) docData.aiDetectedCategory = item.aiDetectedCategory;
+      if (item.aiDetectedDifficulty) docData.aiDetectedDifficulty = item.aiDetectedDifficulty;
+    }
+
+    batch.set(docRef, docData, { merge: true });
     savedIds.push(docId);
   });
 

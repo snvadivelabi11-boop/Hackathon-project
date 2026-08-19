@@ -28,6 +28,9 @@ export {
   parseProblemStatementsAI,
 } from './problems/problemDistributionHandler';
 
+// Export CSV AI Analyzer Function
+export { analyzeCsvProblemsAI } from './problems/csvAiAnalyzer';
+
 // Export Round Control Functions
 export {
   startRound,
