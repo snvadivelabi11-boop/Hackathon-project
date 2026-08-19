@@ -1,0 +1,179 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (request.auth.token.role == 'admin' || 
+         request.auth.token.admin == true ||
+         exists(/databases/$(database)/documents/admin/$(request.auth.uid)) ||
+         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'));
+    }
+
+    function isTeam() {
+      return isAuthenticated() && 
+        (request.auth.token.role == 'team' ||
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'team'));
+    }
+
+    function getUserTeamId() {
+      return request.auth.token.teamId != null 
+        ? request.auth.token.teamId 
+        : (exists(/databases/$(database)/documents/users/$(request.auth.uid)) 
+            ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.teamId 
+            : null);
+    }
+
+    function isOwnTeam(teamId) {
+      return isAuthenticated() && (getUserTeamId() == teamId);
+    }
+
+    function isUserActive() {
+      return !exists(/databases/$(database)/documents/users/$(request.auth.uid)) || 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'active';
+    }
+
+    function isRoundActive(roundId) {
+      let round = get(/databases/$(database)/documents/rounds/$(roundId)).data;
+      return round.status == 'ACTIVE';
+    }
+
+    // Admin & Admins Collections (Authorization verification)
+    match /admin/{adminId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /admins/{adminId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == userId);
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (isAuthenticated() && request.auth.uid == userId && 
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['activeSessionId', 'lastLoginAt', 'updatedAt']));
+    }
+
+    // Teams Collection
+    match /teams/{teamId} {
+      allow read: if isAdmin() || isOwnTeam(teamId);
+      allow write: if isAdmin() || (isOwnTeam(teamId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['round1Submitted', 'round2Submitted', 'round3Submitted', 'updatedAt']));
+
+      // Nested Submissions
+      match /submissions/{subId} {
+        allow read: if isAdmin() || isOwnTeam(teamId);
+        allow write: if isAdmin() || (isOwnTeam(teamId) && isUserActive());
+      }
+    }
+
+    // Team Members Collection
+    match /teamMembers/{memberId} {
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.teamId == getUserTeamId());
+      allow write: if isAdmin();
+    }
+
+    // Problem Statements Collection (Admin manage)
+    match /problemStatements/{statementId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // Team Problem Assignments Collection (Team reads only own assigned problem when published)
+    match /teamProblemAssignments/{teamId} {
+      allow read: if isAdmin() || (isOwnTeam(teamId) && resource.data.status == 'PUBLISHED');
+      allow write: if isAdmin();
+    }
+
+    // Rounds Collection
+    match /rounds/{roundId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Top-Level Submissions Collection
+    match /submissions/{submissionId} {
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.teamId == getUserTeamId());
+      allow write: if isAdmin();
+      allow create: if isTeam() && 
+        isUserActive() && 
+        request.resource.data.teamId == getUserTeamId();
+      allow update: if isTeam() && 
+        isUserActive() && 
+        resource.data.teamId == getUserTeamId() && 
+        request.resource.data.teamId == getUserTeamId();
+    }
+
+    // AI Evaluations Collection (Private to Admin)
+    match /evaluations/{evaluationId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Scores Collection (Team reads only own score; Admin writes)
+    match /scores/{scoreId} {
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.teamId == getUserTeamId());
+      allow write: if isAdmin();
+    }
+
+    // Selections Collection (Public read when published, own team read, Admin full)
+    match /selections/{teamId} {
+      allow read: if isAdmin() || isOwnTeam(teamId) || resource.data.isPublished == true;
+      allow write: if isAdmin();
+    }
+
+    // Certificates Collection
+    match /certificates/{certificateId} {
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.teamId == getUserTeamId());
+      allow write: if isAdmin();
+    }
+
+    // Problem Publications Collection
+    match /problemPublications/{pubId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Problem Statement Imports Collection
+    match /problemStatementImports/{importId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Settings Collection
+    match /settings/problemDistributionDraft {
+      allow read, write: if isAdmin();
+    }
+
+    match /settings/publishedProblemVersion {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /settings/cloudinary {
+      allow read, write: if isAdmin();
+    }
+
+    match /settings/scoringConfig {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Audit Logs Collection
+    match /auditLogs/{logId} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

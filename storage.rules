@@ -1,0 +1,54 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (request.auth.token.role == 'admin' || request.auth.token.admin == true);
+    }
+
+    function isTeam(teamId) {
+      return isAuthenticated() && 
+        (request.auth.token.role == 'team' || request.auth.token.teamId == teamId) &&
+        request.auth.token.teamId == teamId;
+    }
+
+    function isValidFileSize() {
+      return request.resource.size < 50 * 1024 * 1024; // 50MB max
+    }
+
+    function isValidFileType() {
+      return request.resource.contentType.matches('application/pdf') ||
+             request.resource.contentType.matches('application/vnd.ms-powerpoint') ||
+             request.resource.contentType.matches('application/vnd.openxmlformats-officedocument.presentationml.presentation') ||
+             request.resource.contentType.matches('application/msword') ||
+             request.resource.contentType.matches('application/vnd.openxmlformats-officedocument.wordprocessingml.document') ||
+             request.resource.contentType.matches('application/zip') ||
+             request.resource.contentType.matches('application/x-zip-compressed') ||
+             request.resource.contentType.matches('application/octet-stream') ||
+             request.resource.contentType.matches('image/.*');
+    }
+
+    // Submissions directory
+    match /hackathon/teams/{teamId}/{roundFolder}/{fileName} {
+      allow read: if isAdmin() || (isAuthenticated() && request.auth.token.teamId == teamId);
+      allow write: if (isAdmin() || isTeam(teamId)) && isValidFileSize() && isValidFileType();
+      allow delete: if isAdmin();
+    }
+
+    // Certificates directory
+    match /hackathon/certificates/{teamId}/{fileName} {
+      allow read: if isAdmin() || (isAuthenticated() && request.auth.token.teamId == teamId);
+      allow write, delete: if isAdmin();
+    }
+
+    // Default fallback
+    match /{allPaths=**} {
+      allow read, write: if isAdmin();
+    }
+  }
+}
