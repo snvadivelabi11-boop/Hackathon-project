@@ -1,0 +1,19 @@
+{
+  "name": "hackathon-csv-ai-analyzer",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker backend for Hackathon Problem Statement CSV AI Analysis (Claude via OpenRouter)",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types"
+  },
+  "keywords": ["cloudflare", "worker", "openrouter", "claude", "hackathon"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240923.0",
+    "typescript": "^5.5.4",
+    "wrangler": "^3.78.10"
+  }
+}
