@@ -272,7 +272,23 @@ export function calculateRoundTimingEvaluation(
     };
   }
 
-  // 4. SCHEDULED / NOT_STARTED / UPCOMING (Manual Admin START required)
+  // 4. Explicit PAUSED
+  if (effectiveStatus === 'PAUSED') {
+    return {
+      state: 'PAUSED',
+      isUploadAllowed: false,
+      statusMessage: 'Round is paused by Administrator. Submissions temporarily suspended.',
+      badgeColor: 'orange',
+      startTime,
+      endTime,
+      startsInSeconds: 0,
+      endsInSeconds,
+      startsInFormatted: '00:00:00',
+      endsInFormatted: formatCountdown(endsInSeconds),
+    };
+  }
+
+  // 5. SCHEDULED / NOT_STARTED / UPCOMING (Manual Admin START required)
   // Even if current time reaches/passes scheduled start time, round remains SCHEDULED until Admin clicks START ROUND.
   return {
     state: 'SCHEDULED',

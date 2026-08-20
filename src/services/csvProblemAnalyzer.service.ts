@@ -826,9 +826,10 @@ export function mergeAiAnalysisIntoQuestions(
   questions: AnalyzedQuestionItem[],
   aiResponse: CsvAiAnalysisResponse
 ): AnalyzedQuestionItem[] {
-  if (!aiResponse || !aiResponse.problems) return questions;
-  const resultMap = new Map<number, AnalyzedProblemOutputItem>();
-  aiResponse.problems.forEach((p) => resultMap.set(p.sequence, p));
+  const problemsList: any[] = aiResponse?.problems || (aiResponse as any)?.results || [];
+  if (!problemsList || problemsList.length === 0) return questions;
+  const resultMap = new Map<number, any>();
+  problemsList.forEach((p) => resultMap.set(p.sequence, p));
 
   return questions.map((q) => {
     const aiItem = resultMap.get(q.sequence);
@@ -839,6 +840,9 @@ export function mergeAiAnalysisIntoQuestions(
       notesParts.push(`AI Issues: ${aiItem.issues.join('; ')}`);
     }
 
+    const itemCategory = aiItem.category || aiItem.detectedCategory;
+    const itemDifficulty = aiItem.difficulty || aiItem.detectedDifficulty;
+
     return {
       ...q,
       aiAnalyzed: true,
@@ -847,7 +851,7 @@ export function mergeAiAnalysisIntoQuestions(
       problemStatementId: aiItem.problemStatementId || q.problemStatementId || q.statementId,
       title: aiItem.title || q.title,
       description: aiItem.description || q.description,
-      category: q.category || (aiItem.category !== 'General' ? aiItem.category : q.category),
+      category: q.category || (itemCategory && itemCategory !== 'General' ? itemCategory : q.category || itemCategory),
       team: q.team || aiItem.team,
       organization: q.organization || aiItem.organization,
       department: q.department || aiItem.department,
@@ -856,7 +860,7 @@ export function mergeAiAnalysisIntoQuestions(
       aiQualityScore: aiItem.qualityScore,
       aiIssues: aiItem.issues,
       aiSuggestions: aiItem.suggestions,
-      difficulty: q.difficulty || aiItem.difficulty,
+      difficulty: q.difficulty || itemDifficulty,
       validationNotes: notesParts.join(' | '),
     };
   });
