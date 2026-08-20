@@ -18,21 +18,13 @@ import {
   TeamOutlined,
   UserOutlined,
   CheckCircleOutlined,
-  BookOutlined,
 } from '@ant-design/icons';
-import { collection, getDocs, onSnapshot } from 'firebase/firestore';
-import { db } from '../../firebase/config';
 import {
   createTeamAccount,
   getNextTeamPreview,
   generateLocalUsername,
   formatTeamCreationError,
 } from '../../services/accounts.service';
-import {
-  getComprehensiveOccupiedStatementIds,
-  isStatementOccupied,
-} from '../../services/problemAssignment.service';
-import { ProblemStatement } from '../../types';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -45,16 +37,9 @@ interface AddTeamModalProps {
 export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuccess }) => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
-  const [loadingProblems, setLoadingProblems] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [previewTeamId, setPreviewTeamId] = useState<string>('TEAM001');
   const [previewUsername, setPreviewUsername] = useState<string>('');
-  const [autoAssignedProblem, setAutoAssignedProblem] = useState<{
-    statementId: string;
-    orderNum: number;
-    title: string;
-    category?: string;
-  } | null>(null);
 
   const [createdSuccessData, setCreatedSuccessData] = useState<{
     teamId: string;
@@ -71,25 +56,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
       setErrorMessage(null);
       setCreatedSuccessData(null);
       form.resetFields();
-
-      const loadInitial = async () => {
-        const generatedId = await fetchPreview();
-        await fetchProblemStatements(generatedId);
-      };
-      loadInitial();
-
-      // Real-time snapshot listeners while modal is open
-      const unsubPS = onSnapshot(collection(db, 'problemStatements'), () => {
-        fetchProblemStatements(previewTeamId);
-      });
-      const unsubTPA = onSnapshot(collection(db, 'teamProblemAssignments'), () => {
-        fetchProblemStatements(previewTeamId);
-      });
-
-      return () => {
-        unsubPS();
-        unsubTPA();
-      };
+      fetchPreview();
     }
   }, [open]);
 
@@ -110,73 +77,10 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
     }
   };
 
-  const fetchProblemStatements = async (teamIdHint?: string) => {
-    setLoadingProblems(true);
-    try {
-      const [psSnap, occupiedSet] = await Promise.all([
-        getDocs(collection(db, 'problemStatements')),
-        getComprehensiveOccupiedStatementIds(),
-      ]);
-
-      const rawList: ProblemStatement[] = [];
-      psSnap.forEach((doc) => {
-        rawList.push({ statementId: doc.id, ...doc.data() } as ProblemStatement);
-      });
-
-      rawList.sort((a, b) => {
-        const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence !== undefined && a.sequence !== null ? a.sequence : 0);
-        const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence !== undefined && b.sequence !== null ? b.sequence : 0);
-        if (ordA !== ordB) return ordA - ordB;
-        return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
-      });
-
-      const currentTeamId = teamIdHint || previewTeamId || 'TEAM001';
-      const numMatch = currentTeamId.match(/\d+/);
-      const targetTeamNum = numMatch ? parseInt(numMatch[0], 10) : 1;
-
-      const exactMatch = rawList.find((p) => {
-        const ord = p.order !== undefined && p.order !== null ? p.order : (p.sequence || 1);
-        const isPub = p.status === 'PUBLISHED' || p.status === 'published' || p.status === 'active';
-        return ord === targetTeamNum && !isPub && !isStatementOccupied(p, occupiedSet);
-      });
-
-      const nextAscendingFree = rawList.find((p) => {
-        const ord = p.order !== undefined && p.order !== null ? p.order : (p.sequence || 1);
-        const isPub = p.status === 'PUBLISHED' || p.status === 'published' || p.status === 'active';
-        return ord >= targetTeamNum && !isPub && !isStatementOccupied(p, occupiedSet);
-      });
-
-      const fallbackLowestFree = rawList.find((p) => {
-        const isPub = p.status === 'PUBLISHED' || p.status === 'published' || p.status === 'active';
-        return !isPub && !isStatementOccupied(p, occupiedSet);
-      });
-
-      const selected = exactMatch || nextAscendingFree || fallbackLowestFree || null;
-
-      if (selected) {
-        const ord = selected.order !== undefined && selected.order !== null ? selected.order : (selected.sequence || 1);
-        setAutoAssignedProblem({
-          statementId: selected.statementId,
-          orderNum: ord,
-          title: selected.title || 'Untitled Problem',
-          category: selected.category || 'General',
-        });
-      } else {
-        setAutoAssignedProblem(null);
-      }
-    } catch (err) {
-      console.warn('[AddTeamModal] Error loading problem statements:', err);
-      setAutoAssignedProblem(null);
-    } finally {
-      setLoadingProblems(false);
-    }
-  };
-
   const handleLeaderNameChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setErrorMessage(null);
-    const nextId = await fetchPreview(val);
-    await fetchProblemStatements(nextId);
+    await fetchPreview(val);
   };
 
   const handleFinish = async (values: any) => {
@@ -184,11 +88,11 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
     setErrorMessage(null);
 
     try {
+      // Create team account - automatic assignment will be handled by the existing backend/service
       const res = await createTeamAccount({
         teamName: values.teamName.trim(),
         leaderName: values.leaderName.trim(),
         password: values.password,
-        selectedStatementId: autoAssignedProblem?.statementId || undefined,
       });
 
       setCreatedSuccessData({
@@ -205,8 +109,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
       if (onSuccess) onSuccess(res);
 
       form.resetFields();
-      const nextId = await fetchPreview();
-      await fetchProblemStatements(nextId);
+      await fetchPreview();
     } catch (err: any) {
       const safeMsg = formatTeamCreationError(err);
       setErrorMessage(safeMsg);
@@ -229,7 +132,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
       footer={null}
       destroyOnClose
       centered
-      width={580}
+      width={540}
     >
       {createdSuccessData ? (
         <div style={{ padding: '16px 0', textAlign: 'center' }}>
@@ -254,7 +157,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
             ✓ Team account created successfully
           </Title>
           <Paragraph type="secondary" style={{ marginBottom: 20 }}>
-            The team account and auto-assigned problem statement have been permanently saved in Firestore.
+            The team account has been permanently created and registered.
           </Paragraph>
 
           <div
@@ -296,7 +199,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
           </div>
 
           <Space size="middle">
-            <Button onClick={() => { setCreatedSuccessData(null); fetchProblemStatements(); }}>
+            <Button onClick={() => { setCreatedSuccessData(null); fetchPreview(); }}>
               Create Another Team
             </Button>
             <Button type="primary" onClick={onClose} style={{ background: '#1677ff' }}>
@@ -307,7 +210,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
       ) : (
         <div>
           <Paragraph type="secondary" style={{ fontSize: '13px', marginBottom: 20 }}>
-            Enter Team Name, Leader Name, and Password. The Problem Statement is assigned automatically based on team sequence.
+            Enter Team Name, Leader Name, and Password to register a new team.
           </Paragraph>
 
           {errorMessage && (
@@ -370,72 +273,6 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
               </Col>
             </Row>
 
-            <div
-              style={{
-                background: '#f8fafc',
-                padding: 16,
-                borderRadius: 12,
-                border: '1px solid #e2e8f0',
-                marginBottom: 16,
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                <Space size={8}>
-                  <BookOutlined style={{ color: '#1677ff', fontSize: '15px' }} />
-                  <Text strong style={{ fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#1e293b' }}>
-                    Auto-Assigned Problem Statement
-                  </Text>
-                </Space>
-                <Tag color="cyan" style={{ fontWeight: 700, fontSize: '11px', margin: 0 }}>
-                  Automatic / Sequential
-                </Tag>
-              </div>
-
-              {loadingProblems ? (
-                <div style={{ padding: '12px 0', textAlign: 'center', color: '#64748b', fontSize: '13px' }}>
-                  Loading auto-assigned problem statement...
-                </div>
-              ) : autoAssignedProblem ? (
-                <div
-                  style={{
-                    background: '#ffffff',
-                    border: '1px solid #cbd5e1',
-                    borderRadius: 8,
-                    padding: '12px 14px',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                    <Space size={8}>
-                      <Tag color="blue" style={{ fontSize: '12px', fontWeight: 800, margin: 0 }}>
-                        Problem #{autoAssignedProblem.orderNum}
-                      </Tag>
-                      <Text code style={{ fontSize: '12px', fontWeight: 700, color: '#1d39c4' }}>
-                        {autoAssignedProblem.statementId}
-                      </Text>
-                    </Space>
-                    <Tag color="green" style={{ fontSize: '11px', fontWeight: 700, margin: 0 }}>
-                      FREE
-                    </Tag>
-                  </div>
-                  <Text strong style={{ fontSize: '13px', color: '#0f172a', display: 'block', lineHeight: 1.4 }}>
-                    {autoAssignedProblem.title}
-                  </Text>
-                  {autoAssignedProblem.category && (
-                    <Text type="secondary" style={{ fontSize: '11px', marginTop: 4, display: 'block' }}>
-                      Category: {autoAssignedProblem.category}
-                    </Text>
-                  )}
-                </div>
-              ) : (
-                <Alert
-                  type="warning"
-                  message="No unassigned problem statements are available in the catalog."
-                  showIcon
-                  style={{ borderRadius: 8, fontSize: '12px' }}
-                />
-              )}
-            </div>
-
             <Form.Item
               name="password"
               label={<Text strong style={{ fontSize: '13px' }}>Team Password</Text>}
@@ -464,7 +301,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
                 type="primary"
                 htmlType="submit"
                 loading={loading}
-                disabled={loading || loadingProblems || !autoAssignedProblem}
+                disabled={loading}
                 icon={<UserAddOutlined />}
                 style={{ background: '#1677ff', borderRadius: 8, fontWeight: 700 }}
               >
