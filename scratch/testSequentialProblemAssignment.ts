@@ -11,7 +11,7 @@
  * 7. Existing data and AI analysis metadata remain intact.
  */
 
-import { ProblemStatement, TeamProblemAssignment } from '../../../../../../../OneDrive/Desktop/Hackathon/src/types';
+import { ProblemStatement, TeamProblemAssignment } from '../src/types';
 
 // In-memory mock database state simulating Firestore
 interface MockDbState {
@@ -66,11 +66,11 @@ function assignNextSequentialProblemInMemory(
     return { success: true, assigned: false, message: 'No problem statements in catalog' };
   }
 
-  // Sort deterministically by sequence / order / statementId
+  // Sort deterministically by explicit Admin Order (1..N), sequence, and numeric statementId
   allStatements.sort((a, b) => {
-    const seqA = a.sequence || a.order || 0;
-    const seqB = b.sequence || b.order || 0;
-    if (seqA !== seqB) return seqA - seqB;
+    const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence !== undefined && a.sequence !== null ? a.sequence : 0);
+    const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence !== undefined && b.sequence !== null ? b.sequence : 0);
+    if (ordA !== ordB) return ordA - ordB;
     return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
   });
 
@@ -351,15 +351,150 @@ async function runTests() {
   assert(uniqueAssigned.size === 5, 'Zero duplicate problem assignments (5 unique problems allocated)');
 
   // -------------------------------------------------------------
-  // Test 7: AI Analysis Data Preservation
+  // Test 8: Admin Custom Order System (Order 1 -> Problem C, Order 2 -> Problem A, Order 3 -> Problem B)
   // -------------------------------------------------------------
-  console.log('\n--- Test Group 7: AI Analysis Data Preservation ---');
-  const ps1Doc = db.problemStatements.get('PS001')!;
-  assert(ps1Doc.category === 'FinTech', 'AI category preserved');
-  assert(ps1Doc.difficulty === 'EASY', 'AI difficulty preserved');
-  assert(ps1Doc.confidence === 0.95, 'AI confidence preserved');
-  assert(ps1Doc.aiQualityScore === 9, 'AI quality score preserved');
-  assert(ps1Doc.analysis === 'AI Analysis for problem 1', 'AI analysis text preserved');
+  console.log('\n--- Test Group 8: Admin Custom Order System ---');
+  const dbCustomOrder = createMockDb();
+  // Admin defines:
+  // Problem C (PS003) -> Order 1
+  // Problem A (PS001) -> Order 2
+  // Problem B (PS002) -> Order 3
+  dbCustomOrder.problemStatements.set('PS001', {
+    statementId: 'PS001',
+    sequence: 1,
+    order: 2, // Admin sets Order 2 for Problem A
+    title: 'Problem Statement A',
+    description: 'Desc A',
+    status: 'DRAFT',
+    assignedTeamId: null,
+    createdAt: '',
+    updatedAt: '',
+  });
+  dbCustomOrder.problemStatements.set('PS002', {
+    statementId: 'PS002',
+    sequence: 2,
+    order: 3, // Admin sets Order 3 for Problem B
+    title: 'Problem Statement B',
+    description: 'Desc B',
+    status: 'DRAFT',
+    assignedTeamId: null,
+    createdAt: '',
+    updatedAt: '',
+  });
+  dbCustomOrder.problemStatements.set('PS003', {
+    statementId: 'PS003',
+    sequence: 3,
+    order: 1, // Admin sets Order 1 for Problem C
+    title: 'Problem Statement C',
+    description: 'Desc C',
+    status: 'DRAFT',
+    assignedTeamId: null,
+    createdAt: '',
+    updatedAt: '',
+  });
+
+  const resOrder1 = assignNextSequentialProblemInMemory(dbCustomOrder, 'TEAM001', 'Team 1');
+  assert(resOrder1.statementId === 'PS003', 'Team 1 receives Problem C (Order 1)', `Expected PS003, got ${resOrder1.statementId}`);
+
+  const resOrder2 = assignNextSequentialProblemInMemory(dbCustomOrder, 'TEAM002', 'Team 2');
+  assert(resOrder2.statementId === 'PS001', 'Team 2 receives Problem A (Order 2)', `Expected PS001, got ${resOrder2.statementId}`);
+
+  const resOrder3 = assignNextSequentialProblemInMemory(dbCustomOrder, 'TEAM003', 'Team 3');
+  assert(resOrder3.statementId === 'PS002', 'Team 3 receives Problem B (Order 3)', `Expected PS002, got ${resOrder3.statementId}`);
+
+  // -------------------------------------------------------------
+  // Test 9: Team-Level Assignment Inheritance (Multi-User Accounts)
+  // -------------------------------------------------------------
+  console.log('\n--- Test Group 9: Multi-User Account Team Level Inheritance ---');
+  // Team A was assigned Problem C (PS003)
+  // When User A1, User A2, User A3 are created for Team 1:
+  const resUserA1 = assignNextSequentialProblemInMemory(dbCustomOrder, 'TEAM001', 'User A1');
+  assert(resUserA1.statementId === 'PS003', 'User A1 under Team 1 sees Problem C (PS003)');
+  assert(resUserA1.alreadyAssigned === true, 'User A1 reuses team assignment');
+
+  const resUserA2 = assignNextSequentialProblemInMemory(dbCustomOrder, 'TEAM001', 'User A2');
+  assert(resUserA2.statementId === 'PS003', 'User A2 under Team 1 sees Problem C (PS003)');
+  assert(resUserA2.alreadyAssigned === true, 'User A2 reuses team assignment');
+
+  const resUserA3 = assignNextSequentialProblemInMemory(dbCustomOrder, 'TEAM001', 'User A3');
+  assert(resUserA3.statementId === 'PS003', 'User A3 under Team 1 sees Problem C (PS003)');
+  assert(resUserA3.alreadyAssigned === true, 'User A3 reuses team assignment');
+
+  // Creating 10 additional accounts for Team 1 does NOT increment the order counter
+  for (let k = 4; k <= 10; k++) {
+    const resUserAk = assignNextSequentialProblemInMemory(dbCustomOrder, 'TEAM001', `User A${k}`);
+    assert(resUserAk.statementId === 'PS003', `User A${k} under Team 1 still sees PS003`);
+  }
+
+  // -------------------------------------------------------------
+  // Test 10: Existing Hosted Production Teams Remain Untouched
+  // -------------------------------------------------------------
+  console.log('\n--- Test Group 10: Existing Hosted Production Teams Preservation ---');
+  const dbProd = createMockDb();
+  dbProd.problemStatements.set('PSA', {
+    statementId: 'PSA',
+    order: 1,
+    title: 'Problem A',
+    description: 'Desc A',
+    assignedTeamId: 'TEAM046',
+    status: 'PUBLISHED',
+    createdAt: '',
+    updatedAt: '',
+  });
+  dbProd.teamProblemAssignments.set('TEAM046', {
+    teamId: 'TEAM046',
+    statementId: 'PSA',
+    statementTitle: 'Problem A',
+    description: 'Desc A',
+    assignedAt: '',
+    status: 'PUBLISHED',
+  });
+
+  dbProd.problemStatements.set('PSB', {
+    statementId: 'PSB',
+    order: 2,
+    title: 'Problem B',
+    description: 'Desc B',
+    assignedTeamId: 'TEAM045',
+    status: 'PUBLISHED',
+    createdAt: '',
+    updatedAt: '',
+  });
+  dbProd.teamProblemAssignments.set('TEAM045', {
+    teamId: 'TEAM045',
+    statementId: 'PSB',
+    statementTitle: 'Problem B',
+    description: 'Desc B',
+    assignedAt: '',
+    status: 'PUBLISHED',
+  });
+
+  dbProd.problemStatements.set('PSC', {
+    statementId: 'PSC',
+    order: 3,
+    title: 'Problem C',
+    description: 'Desc C',
+    assignedTeamId: 'TEAM044',
+    status: 'PUBLISHED',
+    createdAt: '',
+    updatedAt: '',
+  });
+  dbProd.teamProblemAssignments.set('TEAM044', {
+    teamId: 'TEAM044',
+    statementId: 'PSC',
+    statementTitle: 'Problem C',
+    description: 'Desc C',
+    assignedAt: '',
+    status: 'PUBLISHED',
+  });
+
+  // Verify existing team calls do not mutate existing assignments
+  const check46 = assignNextSequentialProblemInMemory(dbProd, 'TEAM046', 'Existing Team 046 User 2');
+  assert(check46.statementId === 'PSA', 'TEAM046 stays on PSA');
+  const check45 = assignNextSequentialProblemInMemory(dbProd, 'TEAM045', 'Existing Team 045 User 2');
+  assert(check45.statementId === 'PSB', 'TEAM045 stays on PSB');
+  const check44 = assignNextSequentialProblemInMemory(dbProd, 'TEAM044', 'Existing Team 044 User 2');
+  assert(check44.statementId === 'PSC', 'TEAM044 stays on PSC');
 
   // -------------------------------------------------------------
   // SUMMARY

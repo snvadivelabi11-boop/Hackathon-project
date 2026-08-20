@@ -276,20 +276,29 @@ export async function saveProblemStatement(statement: Partial<ProblemStatement>)
   const statementId = statement.statementId || `PS${Date.now().toString().slice(-4)}`;
   const docRef = doc(db, 'problemStatements', statementId);
 
-  await setDoc(
-    docRef,
-    {
-      statementId,
-      title: statement.title || '',
-      description: statement.description || '',
-      instructions: statement.instructions || [],
-      order: statement.order || 1,
-      status: statement.status || 'active',
-      updatedAt: serverTimestamp(),
-      createdAt: serverTimestamp(),
-    },
-    { merge: true }
-  );
+  const payload: any = {
+    statementId,
+    problemStatementId: statement.problemStatementId || statementId,
+    title: statement.title || '',
+    description: statement.description || '',
+    order: Number(statement.order !== undefined ? statement.order : (statement.sequence !== undefined ? statement.sequence : 1)),
+    sequence: Number(statement.sequence !== undefined ? statement.sequence : (statement.order !== undefined ? statement.order : 1)),
+    status: statement.status || 'DRAFT',
+    updatedAt: serverTimestamp(),
+  };
+
+  if (statement.requirements !== undefined) payload.requirements = statement.requirements;
+  if (statement.technicalGuidelines !== undefined) payload.technicalGuidelines = statement.technicalGuidelines;
+  if (statement.constraints !== undefined) payload.constraints = statement.constraints;
+  if (statement.expectedOutcome !== undefined) payload.expectedOutcome = statement.expectedOutcome;
+  if (statement.evaluationNotes !== undefined) payload.evaluationNotes = statement.evaluationNotes;
+  if (statement.instructions !== undefined) payload.instructions = statement.instructions;
+  if (statement.category !== undefined) payload.category = statement.category;
+  if (statement.difficulty !== undefined) payload.difficulty = statement.difficulty;
+  if (statement.organization !== undefined) payload.organization = statement.organization;
+  if (statement.department !== undefined) payload.department = statement.department;
+
+  await setDoc(docRef, payload, { merge: true });
 }
 
 /**

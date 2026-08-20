@@ -209,7 +209,8 @@ export const ProblemStatementsPage: React.FC = () => {
 
     form.setFieldsValue({
       statementId: record.statementId,
-      sequence: record.sequence || record.order,
+      sequence: record.sequence || record.order || 1,
+      order: record.order !== undefined && record.order !== null ? record.order : (record.sequence || 1),
       title: record.title,
       description: record.description,
       requirements: reqString,
@@ -217,7 +218,6 @@ export const ProblemStatementsPage: React.FC = () => {
       constraints: record.constraints || '',
       expectedOutcome: record.expectedOutcome || '',
       evaluationNotes: record.evaluationNotes || '',
-      order: record.order,
       status: record.status,
     });
     setIsAddEditModalOpen(true);
@@ -537,16 +537,20 @@ export const ProblemStatementsPage: React.FC = () => {
 
   const columns = [
     {
-      title: '#',
+      title: 'Order',
       dataIndex: 'order',
       key: 'order',
-      width: 70,
+      width: 85,
       render: (order: number, record: ProblemStatement) => (
         <Tag color="blue" style={{ fontWeight: 800, fontSize: '13px' }}>
-          #{record.sequence || order || 1}
+          #{record.order !== undefined && record.order !== null ? record.order : (record.sequence || 1)}
         </Tag>
       ),
-      sorter: (a: ProblemStatement, b: ProblemStatement) => (a.order || a.sequence || 0) - (b.order || b.sequence || 0),
+      sorter: (a: ProblemStatement, b: ProblemStatement) => {
+        const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence || 0);
+        const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence || 0);
+        return ordA - ordB;
+      },
       defaultSortOrder: 'ascend' as const,
     },
     {
@@ -1250,8 +1254,8 @@ export const ProblemStatementsPage: React.FC = () => {
               </Form.Item>
             </Col>
             <Col xs={24} sm={12}>
-              <Form.Item name="sequence" label="Sequence Number" rules={[{ required: true, message: 'Sequence required' }]}>
-                <InputNumber min={1} style={{ width: '100%' }} />
+              <Form.Item name="order" label="Assignment Order (1, 2, 3...)" rules={[{ required: true, message: 'Order required' }]}>
+                <InputNumber min={1} style={{ width: '100%' }} placeholder="e.g. 1" />
               </Form.Item>
             </Col>
           </Row>

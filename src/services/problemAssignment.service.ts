@@ -715,11 +715,11 @@ export async function getNextAvailableProblemStatement(
       return { nextProblem: null, totalStatements: 0, totalAssigned: 0, totalAvailable: 0 };
     }
 
-    // 2. Sort deterministically by sequence / order / statementId
+    // 2. Sort deterministically by Admin Order (1..N), sequence, and numeric statementId
     const sorted = [...statements].sort((a, b) => {
-      const seqA = a.sequence || a.order || 0;
-      const seqB = b.sequence || b.order || 0;
-      if (seqA !== seqB) return seqA - seqB;
+      const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence !== undefined && a.sequence !== null ? a.sequence : 0);
+      const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence !== undefined && b.sequence !== null ? b.sequence : 0);
+      if (ordA !== ordB) return ordA - ordB;
       return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
     });
 
@@ -826,11 +826,11 @@ export async function assignNextSequentialProblemToTeam(
         allStatements.push({ statementId: d.id, ...d.data() } as ProblemStatement);
       });
 
-      // Sort deterministically by sequence (or order or numeric statementId)
+      // Sort deterministically by Admin Order (1..N), sequence, and numeric statementId
       allStatements.sort((a, b) => {
-        const seqA = a.sequence || a.order || 0;
-        const seqB = b.sequence || b.order || 0;
-        if (seqA !== seqB) return seqA - seqB;
+        const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence !== undefined && a.sequence !== null ? a.sequence : 0);
+        const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence !== undefined && b.sequence !== null ? b.sequence : 0);
+        if (ordA !== ordB) return ordA - ordB;
         return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
       });
 
