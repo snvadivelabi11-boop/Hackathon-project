@@ -654,65 +654,51 @@ export async function run18ManualAssignmentTests() {
   assert(sequentialSuccess === true, 'TEST 19: 20 teams created sequentially with distinct lowest-order FREE problem statements');
 
   // --- TEST 21: Team-Wise Numeric Code Mapping ---
-  console.log('\n--- TEST 21: Team-Wise Numeric Code Mapping (TEAM001 -> #1, TEAM002 -> #2...) ---');
+  console.log('\n--- TEST 21: Dynamic Team-Wise Numeric Code Mapping (TEAM001 -> #1, TEAM060 -> #60, TEAM127 -> #127, TEAM500 -> #500) ---');
   const freshDb = createFreshDb();
-  populate102Statements(freshDb);
+  // Populate up to 500 statements dynamically
+  for (let i = 1; i <= 500; i++) {
+    const psId = `PS${String(i).padStart(3, '0')}`;
+    freshDb.problemStatements.set(psId, {
+      statementId: psId,
+      sequence: i,
+      order: i,
+      title: `Dynamic Problem ${i}`,
+      description: `Description for problem ${i}`,
+      category: 'Dynamic',
+      status: 'draft',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
   // Team 1 -> Problem #1
   const t1Res = await assignSpecificProblemStrictMock(freshDb, 'TEAM001', 'Team 1', 'PS001');
-  // Team 2 -> Problem #2
-  const t2Res = await assignSpecificProblemStrictMock(freshDb, 'TEAM002', 'Team 2', 'PS002');
-  // Team 3 -> Problem #3
-  const t3Res = await assignSpecificProblemStrictMock(freshDb, 'TEAM003', 'Team 3', 'PS003');
-  assert(t1Res.success && t1Res.problemSequence === 1, 'TEST 21: TEAM001 assigned Problem #1');
-  assert(t2Res.success && t2Res.problemSequence === 2, 'TEST 21: TEAM002 assigned Problem #2');
-  assert(t3Res.success && t3Res.problemSequence === 3, 'TEST 21: TEAM003 assigned Problem #3');
+  // Team 60 -> Problem #60
+  const t60Res = await assignSpecificProblemStrictMock(freshDb, 'TEAM060', 'Team 60', 'PS060');
+  // Team 127 -> Problem #127
+  const t127Res = await assignSpecificProblemStrictMock(freshDb, 'TEAM127', 'Team 127', 'PS127');
+  // Team 500 -> Problem #500
+  const t500Res = await assignSpecificProblemStrictMock(freshDb, 'TEAM500', 'Team 500', 'PS500');
 
-  // --- TEST 22: Historical Occupancy Collision Avoidance ---
-  console.log('\n--- TEST 22: Historical Occupancy Collision Avoidance (TEAM004 when Problem #4 is already taken by TEAM047) ---');
-  // Suppose TEAM047 already occupies Problem #4
-  await assignSpecificProblemStrictMock(freshDb, 'TEAM047', 'Team 47', 'PS004');
-  assert(freshDb.teamProblemAssignments.get('TEAM047')?.statementId === 'PS004', 'TEST 22: TEAM047 legitimately owns Problem #4');
+  assert(t1Res.success && t1Res.problemSequence === 1, 'TEST 21: TEAM001 dynamically assigned Problem #1');
+  assert(t60Res.success && t60Res.problemSequence === 60, 'TEST 21: TEAM060 dynamically assigned Problem #60');
+  assert(t127Res.success && t127Res.problemSequence === 127, 'TEST 21: TEAM127 dynamically assigned Problem #127');
+  assert(t500Res.success && t500Res.problemSequence === 500, 'TEST 21: TEAM500 dynamically assigned Problem #500');
 
-  // Now create TEAM004 -> Since #4 is occupied, system selects next ascending FREE problem (#5)
-  const occupiedForT4 = getComprehensiveOccupiedIds(freshDb, 'TEAM004');
-  let chosenForT4: ProblemStatement | null = null;
-  // Look for target team num = 4
-  const targetNum = 4;
-  for (let pNum = 1; pNum <= 102; pNum++) {
-    const ps = freshDb.problemStatements.get(`PS${String(pNum).padStart(3, '0')}`);
-    if (ps && !isStatementOccupied(ps, occupiedForT4, 'TEAM004') && ps.status !== 'PUBLISHED') {
-      if (pNum >= targetNum && !chosenForT4) {
-        chosenForT4 = ps;
-        break;
-      }
-    }
-  }
-  const t4Res = await assignSpecificProblemStrictMock(freshDb, 'TEAM004', 'Team 4', chosenForT4!.statementId);
-  assert(t4Res.success === true && t4Res.statementId === 'PS005', 'TEST 22: TEAM004 receives next available FREE Problem #5 without touching TEAM047');
-  assert(freshDb.teamProblemAssignments.get('TEAM047')?.statementId === 'PS004', 'TEST 22: TEAM047 retains Problem #4 permanently');
+  // --- TEST 22: Conflict Handling: If Problem #N is already occupied, fail safely ---
+  console.log('\n--- TEST 22: Conflict Handling: If Problem #N is already occupied, do NOT assign fallback ---');
+  // TEAM060 already owns PS060. Now another team tries to create/claim Problem 60
+  const conflictAttempt = await assignSpecificProblemStrictMock(freshDb, 'TEAM060_DUP', 'Duplicate Team 60', 'PS060');
+  assert(conflictAttempt.success === false, 'TEST 22: Duplicate assignment to Problem #60 blocked safely');
+  assert(freshDb.teamProblemAssignments.get('TEAM060')?.statementId === 'PS060', 'TEST 22: Original TEAM060 retains Problem #60 untouched');
 
-  // --- TEST 24: Catalog Exhaustion: No FREE problems left ---
-  console.log('\n--- TEST 24: Catalog Exhaustion Handling (when 102/102 problems assigned) ---');
-  const exhaustedDb = createFreshDb();
-  populate102Statements(exhaustedDb);
-  // Assign all 102
-  for (let i = 1; i <= 102; i++) {
-    const tId = `TEAM${String(i).padStart(3, '0')}`;
-    const psId = `PS${String(i).padStart(3, '0')}`;
-    await assignSpecificProblemStrictMock(exhaustedDb, tId, `Team ${i}`, psId);
-  }
-  // Try assigning TEAM103
-  const occupiedEx = getComprehensiveOccupiedIds(exhaustedDb, 'TEAM103');
-  let chosenFor103: ProblemStatement | null = null;
-  for (let pNum = 1; pNum <= 102; pNum++) {
-    const ps = exhaustedDb.problemStatements.get(`PS${String(pNum).padStart(3, '0')}`);
-    if (ps && !isStatementOccupied(ps, occupiedEx, 'TEAM103') && ps.status !== 'PUBLISHED') {
-      chosenFor103 = ps;
-      break;
-    }
-  }
-  assert(chosenFor103 === null, 'TEST 24: System detects 0 unassigned problem statements available');
-  assert(exhaustedDb.teams.size === 102, 'TEST 24: No duplicate assignments allowed when catalog is exhausted');
+  // --- TEST 24: Non-existent Problem: If Problem #N does not exist in catalog, fail safely ---
+  console.log('\n--- TEST 24: Non-existent Problem Handling (TEAM501 when catalog only has 500) ---');
+  const target501 = freshDb.problemStatements.get('PS501');
+  assert(!target501, 'TEST 24: Problem #501 does not exist in 500-item catalog');
+  const t501Res = await assignSpecificProblemStrictMock(freshDb, 'TEAM501', 'Team 501', 'PS501');
+  assert(t501Res.success === false, 'TEST 24: TEAM501 creation rejected when Problem #501 does not exist in catalog');
 
   console.log('\n========================================================================================');
   console.log(`TOTAL TESTS: ${total} | PASSED: ${passed} | FAILED: ${total - passed}`);

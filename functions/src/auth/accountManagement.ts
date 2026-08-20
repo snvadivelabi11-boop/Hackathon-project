@@ -397,33 +397,20 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
       const numMatch = allocatedTeamId.match(/\d+/);
       const targetTeamNum = numMatch ? parseInt(numMatch[0], 10) : nextNum;
 
-      // 1. Exact match
-      let chosenPs = allPsList.find((p) => {
+      // Find the exact Problem Statement matching the target team sequence number
+      const chosenPs = allPsList.find((p) => {
         const ord = p.order !== undefined && p.order !== null ? p.order : (p.sequence || 1);
-        const isPub = p.status === 'published' || p.status === 'PUBLISHED' || p.status === 'active';
-        return ord === targetTeamNum && !isPub && !isStatementOccupiedBackend(p, occupiedIds, allocatedTeamId);
+        return ord === targetTeamNum;
       });
 
-      // 2. Next ascending free
       if (!chosenPs) {
-        chosenPs = allPsList.find((p) => {
-          const ord = p.order !== undefined && p.order !== null ? p.order : (p.sequence || 1);
-          const isPub = p.status === 'published' || p.status === 'PUBLISHED' || p.status === 'active';
-          return ord >= targetTeamNum && !isPub && !isStatementOccupiedBackend(p, occupiedIds, allocatedTeamId);
-        });
+        throw new functions.https.HttpsError(
+          'not-found',
+          `No Problem Statement exists for Team #${targetTeamNum}. Team creation was not completed.`
+        );
       }
 
-      // 3. Fallback lowest free
-      if (!chosenPs) {
-        chosenPs = allPsList.find((p) => {
-          const isPub = p.status === 'published' || p.status === 'PUBLISHED' || p.status === 'active';
-          return !isPub && !isStatementOccupiedBackend(p, occupiedIds, allocatedTeamId);
-        });
-      }
-
-      if (chosenPs) {
-        targetStatementId = chosenPs.statementId;
-      }
+      targetStatementId = chosenPs.statementId;
     }
 
     if (targetStatementId) {
@@ -431,16 +418,22 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
       const psSnap = await psRef.get();
 
       if (!psSnap.exists) {
-        throw new functions.https.HttpsError('not-found', `Problem Statement ${targetStatementId} does not exist.`);
+        throw new functions.https.HttpsError(
+          'not-found',
+          `Problem Statement ${targetStatementId} does not exist.`
+        );
       }
 
       const psData = psSnap.data() as any;
+      const seq = psData.order !== undefined && psData.order !== null ? psData.order : (psData.sequence || 1);
 
       if (isStatementOccupiedBackend(psData, occupiedIds, allocatedTeamId)) {
-        throw new functions.https.HttpsError('already-exists', 'This problem statement has already been assigned. Please select another FREE problem statement.');
+        throw new functions.https.HttpsError(
+          'already-exists',
+          `Problem #${seq} is already assigned. Team creation was not completed.`
+        );
       }
 
-      const seq = psData.order !== undefined && psData.order !== null ? psData.order : (psData.sequence || 1);
       const isPublished = psData.status === 'published' || psData.status === 'PUBLISHED';
       const nowIso = new Date().toISOString();
 

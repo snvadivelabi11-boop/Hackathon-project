@@ -1034,39 +1034,21 @@ export async function assignNextSequentialProblemToTeam(
         };
       }
 
-      // Determine target team number from teamId (e.g. TEAM005 -> 5)
+      // Determine target team number from teamId (e.g. TEAM005 -> 5, TEAM127 -> 127)
       const numMatch = teamId.match(/\d+/);
       const targetTeamNum = numMatch ? parseInt(numMatch[0], 10) : 1;
 
-      // 1. Prefer problem matching exact team number if FREE
-      let candidate = allStatements.find((c) => {
+      // Find the exact Problem Statement matching the target team sequence number
+      const candidate = allStatements.find((c) => {
         const ord = c.order !== undefined && c.order !== null ? c.order : (c.sequence || 1);
-        const isPub = c.status === 'PUBLISHED' || c.status === 'published' || c.status === 'active';
-        return ord === targetTeamNum && !isPub && !isStatementOccupied(c, occupiedSet, teamId);
+        return ord === targetTeamNum;
       });
-
-      // 2. If occupied/unavailable, find first FREE problem in ascending sequence
-      if (!candidate) {
-        candidate = allStatements.find((c) => {
-          const ord = c.order !== undefined && c.order !== null ? c.order : (c.sequence || 1);
-          const isPub = c.status === 'PUBLISHED' || c.status === 'published' || c.status === 'active';
-          return ord >= targetTeamNum && !isPub && !isStatementOccupied(c, occupiedSet, teamId);
-        });
-      }
-
-      // 3. Fallback: lowest-order FREE problem anywhere in catalog
-      if (!candidate) {
-        candidate = allStatements.find((c) => {
-          const isPub = c.status === 'PUBLISHED' || c.status === 'published' || c.status === 'active';
-          return !isPub && !isStatementOccupied(c, occupiedSet, teamId);
-        });
-      }
 
       if (!candidate) {
         return {
           success: false,
           assigned: false,
-          message: 'No unassigned problem statements are available.',
+          message: `No Problem Statement exists for Team #${targetTeamNum}. Team creation was not completed.`,
         };
       }
 
@@ -1076,16 +1058,16 @@ export async function assignNextSequentialProblemToTeam(
         return {
           success: false,
           assigned: false,
-          message: 'No unassigned problem statements are available.',
+          message: `No Problem Statement exists for Team #${targetTeamNum}. Team creation was not completed.`,
         };
       }
 
       const candData = candSnap.data() as ProblemStatement;
-      if (isStatementOccupied(candData, occupiedSet, teamId) || candData.status === 'PUBLISHED' || candData.status === 'published' || candData.status === 'active') {
+      if (isStatementOccupied(candData, occupiedSet, teamId)) {
         return {
           success: false,
           assigned: false,
-          message: 'This problem statement has already been assigned. Please select another FREE problem statement.',
+          message: `Problem #${targetTeamNum} is already assigned. Team creation was not completed.`,
         };
       }
 
