@@ -179,6 +179,11 @@ export const AccountsPage: React.FC = () => {
         <div>
           <Text strong style={{ fontSize: '14px' }}>{name}</Text>
           <div style={{ fontSize: '12px', color: '#8c8c8c' }}>Username: {record.username}</div>
+          {record.assignedStatementId && (
+            <Tag color="green" style={{ fontSize: '11px', marginTop: 2, padding: '0 4px' }}>
+              {record.assignedStatementId}
+            </Tag>
+          )}
         </div>
       ),
       sorter: (a: Team, b: Team) => a.teamName.localeCompare(b.teamName),
@@ -486,6 +491,12 @@ export const AccountsPage: React.FC = () => {
             <div><Text type="secondary">Team Name: </Text><Text strong>{selectedTeam.teamName}</Text></div>
             <div><Text type="secondary">Leader Name: </Text><Text>{selectedTeam.leaderName}</Text></div>
             <div><Text type="secondary">Login Username: </Text><Text code>{selectedTeam.username}</Text></div>
+            {selectedTeam.assignedStatementId && (
+              <div>
+                <Text type="secondary">Assigned Problem: </Text>
+                <Tag color="green">{selectedTeam.assignedStatementId} {selectedTeam.assignedStatementTitle ? `— ${selectedTeam.assignedStatementTitle}` : ''}</Tag>
+              </div>
+            )}
             <div><Text type="secondary">Account Status: </Text><StatusBadge status={selectedTeam.status} /></div>
             <div><Text type="secondary">Created Timestamp: </Text><Text>{formatISTDateTime(selectedTeam.createdAt)}</Text></div>
           </div>

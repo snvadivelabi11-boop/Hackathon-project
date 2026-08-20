@@ -17,11 +17,15 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [previewTeamId, setPreviewTeamId] = useState<string>('TEAM001');
   const [previewUsername, setPreviewUsername] = useState<string>('');
+  const [previewProblem, setPreviewProblem] = useState<{ statementId: string; sequence?: number; title: string } | null>(null);
   const [createdSuccessData, setCreatedSuccessData] = useState<{
     teamId: string;
     username: string;
     teamName: string;
     leaderName: string;
+    assignedStatementId?: string | null;
+    assignedStatementTitle?: string | null;
+    assignedProblemSequence?: number | null;
   } | null>(null);
 
   useEffect(() => {
@@ -37,6 +41,11 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
     try {
       const res = await getNextTeamPreview(leaderNameVal);
       if (res.generatedTeamId) setPreviewTeamId(res.generatedTeamId);
+      if (res.defaultProblemStatement) {
+        setPreviewProblem(res.defaultProblemStatement);
+      } else {
+        setPreviewProblem(null);
+      }
       if (leaderNameVal) {
         setPreviewUsername(res.generatedUsername || generateLocalUsername(leaderNameVal));
       } else {
@@ -73,6 +82,9 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
         username: res.username,
         teamName: res.teamName,
         leaderName: res.leaderName,
+        assignedStatementId: res.assignedStatementId,
+        assignedStatementTitle: res.assignedStatementTitle,
+        assignedProblemSequence: res.assignedProblemSequence,
       });
 
       message.success(`Team ${res.teamId} created successfully!`);
@@ -152,6 +164,14 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
                 {createdSuccessData.username}
               </Text>
             </div>
+            {createdSuccessData.assignedStatementId && (
+              <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text type="secondary">Assigned Problem:</Text>
+                <Tag color="green" style={{ fontWeight: 800, fontSize: '13px', margin: 0 }}>
+                  {createdSuccessData.assignedProblemSequence ? `Problem #${createdSuccessData.assignedProblemSequence} (${createdSuccessData.assignedStatementId})` : createdSuccessData.assignedStatementId}
+                </Tag>
+              </div>
+            )}
             <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between' }}>
               <Text type="secondary">Team Name:</Text>
               <Text strong>{createdSuccessData.teamName}</Text>
@@ -215,7 +235,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
             </Form.Item>
 
             {/* Generated Fields (Auto) */}
-            <Row gutter={12} style={{ marginBottom: 16 }}>
+            <Row gutter={12} style={{ marginBottom: 12 }}>
               <Col span={12}>
                 <div style={{ background: '#f1f5f9', padding: '10px 14px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
                   <Text type="secondary" style={{ fontSize: '11px', textTransform: 'uppercase', display: 'block', fontWeight: 600 }}>
@@ -238,6 +258,23 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
                 </div>
               </Col>
             </Row>
+
+            {/* Default Problem Statement Preview (Auto Sequential) */}
+            {previewProblem && (
+              <div style={{ background: '#f0fdf4', padding: '10px 14px', borderRadius: 8, border: '1px solid #bbf7d0', marginBottom: 16 }}>
+                <Text type="secondary" style={{ fontSize: '11px', textTransform: 'uppercase', display: 'block', fontWeight: 600, color: '#166534' }}>
+                  Default Problem Statement (Auto Sequential)
+                </Text>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                  <Tag color="green" style={{ fontSize: '13px', fontWeight: 800, margin: 0 }}>
+                    Problem #{previewProblem.sequence || 1} ({previewProblem.statementId})
+                  </Tag>
+                  <Text ellipsis strong style={{ fontSize: '13px', color: '#14532d', maxWidth: 260 }}>
+                    {previewProblem.title}
+                  </Text>
+                </div>
+              </div>
+            )}
 
             {/* Password */}
             <Form.Item

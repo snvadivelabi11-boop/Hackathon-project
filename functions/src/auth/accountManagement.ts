@@ -72,10 +72,51 @@ export const getNextTeamPreview = functions.https.onCall(async (data, context) =
   const baseUsername = leaderName ? normalizeUsername(leaderName) : '';
   const generatedUsername = baseUsername ? await getUniqueUsername(db, baseUsername) : '';
 
+  // Calculate next unassigned sequential problem statement preview
+  let defaultProblemStatement: { statementId: string; sequence: number; title: string } | null = null;
+  try {
+    const psSnap = await db.collection('problemStatements').get();
+    if (!psSnap.empty) {
+      const allStatements: any[] = [];
+      psSnap.forEach((d) => allStatements.push({ statementId: d.id, ...d.data() }));
+
+      allStatements.sort((a, b) => {
+        const seqA = a.sequence || a.order || 0;
+        const seqB = b.sequence || b.order || 0;
+        if (seqA !== seqB) return seqA - seqB;
+        return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
+      });
+
+      const allAssignsSnap = await db.collection('teamProblemAssignments').get();
+      const occupiedIds = new Set<string>();
+      allAssignsSnap.forEach((d) => {
+        const dat = d.data();
+        if (dat.statementId) occupiedIds.add(dat.statementId);
+      });
+      allStatements.forEach((st) => {
+        if (st.assignedTeamId && st.assignedTeamId.trim().length > 0) {
+          occupiedIds.add(st.statementId);
+        }
+      });
+
+      const nextProblem = allStatements.find((st) => !occupiedIds.has(st.statementId));
+      if (nextProblem) {
+        defaultProblemStatement = {
+          statementId: nextProblem.statementId,
+          sequence: nextProblem.sequence || nextProblem.order || 1,
+          title: nextProblem.title,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[CloudFunctions] Could not preview next available problem statement:', err);
+  }
+
   return {
     nextTeamNumber: nextNum,
     generatedTeamId,
     generatedUsername,
+    defaultProblemStatement,
   };
 });
 
@@ -206,6 +247,96 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
       { teamName: trimmedTeamName, leaderName: trimmedLeaderName, username: normalizedUsername }
     );
 
+    // 8. Automatically assign next unassigned sequential Problem Statement
+    let assignedStatementId: string | null = null;
+    let assignedStatementTitle: string | null = null;
+    let assignedProblemSequence: number | null = null;
+
+    try {
+      const existingAssignSnap = await db.collection('teamProblemAssignments').doc(allocatedTeamId).get();
+      if (!existingAssignSnap.exists) {
+        const psSnap = await db.collection('problemStatements').get();
+        if (!psSnap.empty) {
+          const allStatements: any[] = [];
+          psSnap.forEach((d) => allStatements.push({ statementId: d.id, ...d.data() }));
+
+          allStatements.sort((a, b) => {
+            const seqA = a.sequence || a.order || 0;
+            const seqB = b.sequence || b.order || 0;
+            if (seqA !== seqB) return seqA - seqB;
+            return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
+          });
+
+          const allAssignsSnap = await db.collection('teamProblemAssignments').get();
+          const occupiedIds = new Set<string>();
+          allAssignsSnap.forEach((d) => {
+            const dat = d.data();
+            if (dat.statementId && dat.teamId !== allocatedTeamId) occupiedIds.add(dat.statementId);
+          });
+          allStatements.forEach((st) => {
+            if (st.assignedTeamId && st.assignedTeamId !== allocatedTeamId && st.assignedTeamId.trim().length > 0) {
+              occupiedIds.add(st.statementId);
+            }
+          });
+
+          const nextProblem = allStatements.find((st) => !occupiedIds.has(st.statementId));
+          if (nextProblem) {
+            const seq = nextProblem.sequence || nextProblem.order || 1;
+            const isPublished = nextProblem.status === 'published' || nextProblem.status === 'PUBLISHED';
+            const nowIso = new Date().toISOString();
+
+            await db.collection('teamProblemAssignments').doc(allocatedTeamId).set({
+              teamId: allocatedTeamId,
+              statementId: nextProblem.statementId,
+              problemStatementId: nextProblem.problemStatementId || nextProblem.statementId,
+              problemSequence: seq,
+              statementTitle: nextProblem.title,
+              description: nextProblem.description,
+              category: nextProblem.category || 'General',
+              difficulty: nextProblem.difficulty || 'MEDIUM',
+              organization: nextProblem.organization || null,
+              department: nextProblem.department || null,
+              team: nextProblem.team || trimmedTeamName,
+              aiAnalysis: nextProblem.analysis || nextProblem.evaluationNotes || '',
+              confidence: nextProblem.confidence || 0.9,
+              qualityScore: nextProblem.aiQualityScore || 8,
+              aiIssues: nextProblem.aiIssues || [],
+              aiSuggestions: nextProblem.aiSuggestions || [],
+              requirements: nextProblem.requirements || [],
+              examples: nextProblem.examples || '',
+              technicalGuidelines: nextProblem.technicalGuidelines || '',
+              constraints: nextProblem.constraints || '',
+              expectedOutcome: nextProblem.expectedOutcome || '',
+              instructions: nextProblem.instructions || (nextProblem.technicalGuidelines ? [nextProblem.technicalGuidelines] : []),
+              sourceFileName: nextProblem.sourceFileName || '',
+              assignedAt: nowIso,
+              publishedAt: isPublished ? nowIso : null,
+              assignedBy: context.auth!.token.email || context.auth!.uid || 'system_auto_assignment',
+              status: isPublished ? 'PUBLISHED' : 'DRAFT',
+            }, { merge: true });
+
+            await db.collection('problemStatements').doc(nextProblem.statementId).update({
+              assignedTeamId: allocatedTeamId,
+              assignedTeamName: trimmedTeamName,
+              updatedAt: now,
+            });
+
+            await db.collection('teams').doc(allocatedTeamId).update({
+              assignedStatementId: nextProblem.statementId,
+              assignedStatementTitle: nextProblem.title,
+              updatedAt: now,
+            });
+
+            assignedStatementId = nextProblem.statementId;
+            assignedStatementTitle = nextProblem.title;
+            assignedProblemSequence = seq;
+          }
+        }
+      }
+    } catch (assignError) {
+      console.warn('[CloudFunctions] Non-blocking auto problem assignment warning:', assignError);
+    }
+
     return {
       success: true,
       teamId: allocatedTeamId,
@@ -213,6 +344,9 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
       leaderName: trimmedLeaderName,
       username: normalizedUsername,
       authUid: userRecord.uid,
+      assignedStatementId,
+      assignedStatementTitle,
+      assignedProblemSequence,
       message: `Team ${allocatedTeamId} created successfully!`,
     };
   } catch (error: any) {

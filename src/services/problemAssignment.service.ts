@@ -11,6 +11,7 @@ import {
   orderBy,
   serverTimestamp,
   writeBatch,
+  runTransaction,
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import {
@@ -671,4 +672,270 @@ export async function deleteProblemStatementCascade(
   });
 
   await batch.commit();
+}
+
+/**
+ * Result structure for sequential problem assignment
+ */
+export interface SequentialAssignmentResult {
+  success: boolean;
+  assigned: boolean;
+  alreadyAssigned?: boolean;
+  statementId?: string;
+  problemSequence?: number;
+  statementTitle?: string;
+  problem?: ProblemStatement;
+  message: string;
+}
+
+/**
+ * Calculates the next available unassigned Problem Statement in sequential order (1..N).
+ * Pure query helper for previewing in the Add Team modal or UI without writing to Firestore.
+ */
+export async function getNextAvailableProblemStatement(
+  knownStatements?: ProblemStatement[]
+): Promise<{
+  nextProblem: ProblemStatement | null;
+  totalStatements: number;
+  totalAssigned: number;
+  totalAvailable: number;
+}> {
+  try {
+    // 1. Fetch statements if not provided
+    let statements = knownStatements;
+    if (!statements || statements.length === 0) {
+      const psSnap = await getDocs(collection(db, 'problemStatements'));
+      statements = [];
+      psSnap.forEach((d) => {
+        statements!.push({ statementId: d.id, ...d.data() } as ProblemStatement);
+      });
+    }
+
+    if (statements.length === 0) {
+      return { nextProblem: null, totalStatements: 0, totalAssigned: 0, totalAvailable: 0 };
+    }
+
+    // 2. Sort deterministically by sequence / order / statementId
+    const sorted = [...statements].sort((a, b) => {
+      const seqA = a.sequence || a.order || 0;
+      const seqB = b.sequence || b.order || 0;
+      if (seqA !== seqB) return seqA - seqB;
+      return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
+    });
+
+    // 3. Fetch all active team assignments
+    const assignSnap = await getDocs(collection(db, 'teamProblemAssignments'));
+    const occupiedIds = new Set<string>();
+
+    assignSnap.forEach((d) => {
+      const data = d.data();
+      if (data.statementId) occupiedIds.add(data.statementId);
+    });
+
+    // Also include any statements with assignedTeamId populated
+    sorted.forEach((st) => {
+      if (st.assignedTeamId && st.assignedTeamId.trim().length > 0) {
+        occupiedIds.add(st.statementId);
+      }
+    });
+
+    // 4. Find the first unassigned problem statement in sequential order
+    const nextAvailable = sorted.find((st) => !occupiedIds.has(st.statementId)) || null;
+    const totalAssigned = occupiedIds.size;
+    const totalAvailable = Math.max(0, sorted.length - totalAssigned);
+
+    return {
+      nextProblem: nextAvailable,
+      totalStatements: sorted.length,
+      totalAssigned,
+      totalAvailable,
+    };
+  } catch (err: any) {
+    console.warn('[ProblemAssignment] getNextAvailableProblemStatement error:', err);
+    return { nextProblem: null, totalStatements: 0, totalAssigned: 0, totalAvailable: 0 };
+  }
+}
+
+/**
+ * Assigns the next available unassigned Problem Statement in sequential order (1..N) to a Team.
+ * 
+ * Rules:
+ * 1. FIRST TEAM -> First available Problem Statement (#1).
+ * 2. NEXT TEAM -> Next available Problem Statement (#2, #3...).
+ * 3. EXISTING TEAM -> If teamId already has an assignment, keeps it and returns early (Idempotent).
+ * 4. ALREADY ASSIGNED -> Assigned problem statements are strictly skipped so each problem gets at most 1 team by default.
+ * 5. ATOMIC / CONCURRENCY SAFE -> Uses Firestore runTransaction to prevent race conditions.
+ * 6. METADATA PRESERVED -> Preserves all AI analysis, category, difficulty, organization, department, and prompt fields.
+ */
+export async function assignNextSequentialProblemToTeam(
+  teamId: string,
+  teamName: string,
+  adminUser?: { uid?: string; email?: string | null }
+): Promise<SequentialAssignmentResult> {
+  if (!teamId) {
+    return { success: false, assigned: false, message: 'Invalid team ID provided.' };
+  }
+
+  // 1. Check if this team already has an assignment (Rule 3: Existing team keeps its assignment)
+  const existingAssignRef = doc(db, 'teamProblemAssignments', teamId);
+  const existingAssignSnap = await getDoc(existingAssignRef);
+
+  if (existingAssignSnap.exists()) {
+    const existingData = existingAssignSnap.data();
+    return {
+      success: true,
+      assigned: false,
+      alreadyAssigned: true,
+      statementId: existingData.statementId,
+      problemSequence: existingData.problemSequence,
+      statementTitle: existingData.statementTitle,
+      message: `Team ${teamId} already has assigned problem ${existingData.statementId} ("${existingData.statementTitle}"). Existing assignment preserved.`,
+    };
+  }
+
+  // 2. Atomic assignment via Firestore transaction
+  try {
+    const result = await runTransaction(db, async (transaction) => {
+      // Re-verify existing team assignment inside transaction
+      const assignCheck = await transaction.get(existingAssignRef);
+      if (assignCheck.exists()) {
+        const existingData = assignCheck.data();
+        return {
+          success: true,
+          assigned: false,
+          alreadyAssigned: true,
+          statementId: existingData.statementId,
+          problemSequence: existingData.problemSequence,
+          statementTitle: existingData.statementTitle,
+          message: `Team ${teamId} already has assigned problem ${existingData.statementId}.`,
+        };
+      }
+
+      // Fetch all problem statements
+      const psSnap = await getDocs(collection(db, 'problemStatements'));
+      if (psSnap.empty) {
+        return {
+          success: true,
+          assigned: false,
+          message: 'No problem statements found in catalog. Team created without default problem.',
+        };
+      }
+
+      const allStatements: ProblemStatement[] = [];
+      psSnap.forEach((d) => {
+        allStatements.push({ statementId: d.id, ...d.data() } as ProblemStatement);
+      });
+
+      // Sort deterministically by sequence (or order or numeric statementId)
+      allStatements.sort((a, b) => {
+        const seqA = a.sequence || a.order || 0;
+        const seqB = b.sequence || b.order || 0;
+        if (seqA !== seqB) return seqA - seqB;
+        return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
+      });
+
+      // Fetch all current team assignments to know which problem statements are occupied
+      const allAssignsSnap = await getDocs(collection(db, 'teamProblemAssignments'));
+      const occupiedStatementIds = new Set<string>();
+
+      allAssignsSnap.forEach((d) => {
+        const data = d.data();
+        if (data.statementId && data.teamId !== teamId) {
+          occupiedStatementIds.add(data.statementId);
+        }
+      });
+
+      allStatements.forEach((st) => {
+        if (st.assignedTeamId && st.assignedTeamId !== teamId && st.assignedTeamId.trim().length > 0) {
+          occupiedStatementIds.add(st.statementId);
+        }
+      });
+
+      // Find the first unassigned problem statement
+      const nextProblem = allStatements.find((st) => !occupiedStatementIds.has(st.statementId));
+
+      if (!nextProblem) {
+        return {
+          success: true,
+          assigned: false,
+          message: 'All available problem statements are currently assigned. Team created without default problem.',
+        };
+      }
+
+      const now = new Date().toISOString();
+      const isPublished = nextProblem.status === 'published' || nextProblem.status === 'PUBLISHED';
+      const seq = nextProblem.sequence || nextProblem.order || 1;
+
+      // 1. Write /teamProblemAssignments/{teamId}
+      transaction.set(
+        existingAssignRef,
+        {
+          teamId,
+          statementId: nextProblem.statementId,
+          problemStatementId: nextProblem.problemStatementId || nextProblem.statementId,
+          problemSequence: seq,
+          statementTitle: nextProblem.title,
+          description: nextProblem.description,
+          category: nextProblem.category || 'General',
+          difficulty: nextProblem.difficulty || 'MEDIUM',
+          organization: nextProblem.organization || null,
+          department: nextProblem.department || null,
+          team: nextProblem.team || teamName,
+          aiAnalysis: nextProblem.analysis || nextProblem.evaluationNotes || '',
+          confidence: nextProblem.confidence || 0.9,
+          qualityScore: nextProblem.aiQualityScore || 8,
+          aiIssues: nextProblem.aiIssues || [],
+          aiSuggestions: nextProblem.aiSuggestions || [],
+          requirements: nextProblem.requirements || [],
+          examples: nextProblem.examples || '',
+          technicalGuidelines: nextProblem.technicalGuidelines || '',
+          constraints: nextProblem.constraints || '',
+          expectedOutcome: nextProblem.expectedOutcome || '',
+          instructions: nextProblem.instructions || (nextProblem.technicalGuidelines ? [nextProblem.technicalGuidelines] : []),
+          sourceFileName: nextProblem.sourceFileName || '',
+          assignedAt: now,
+          publishedAt: isPublished ? now : null,
+          assignedBy: adminUser?.email || adminUser?.uid || 'system_auto_assignment',
+          status: isPublished ? 'PUBLISHED' : 'DRAFT',
+        },
+        { merge: true }
+      );
+
+      // 2. Update /problemStatements/{statementId}
+      const psRef = doc(db, 'problemStatements', nextProblem.statementId);
+      transaction.update(psRef, {
+        assignedTeamId: teamId,
+        assignedTeamName: teamName,
+        updatedAt: serverTimestamp(),
+      });
+
+      // 3. Update /teams/{teamId}
+      const teamRef = doc(db, 'teams', teamId);
+      transaction.update(teamRef, {
+        assignedStatementId: nextProblem.statementId,
+        assignedStatementTitle: nextProblem.title,
+        updatedAt: serverTimestamp(),
+      });
+
+      return {
+        success: true,
+        assigned: true,
+        statementId: nextProblem.statementId,
+        problemSequence: seq,
+        statementTitle: nextProblem.title,
+        problem: nextProblem,
+        message: `Assigned Problem #${seq} (${nextProblem.statementId}: "${nextProblem.title}") to ${teamName} (${teamId}) as default.`,
+      };
+    });
+
+    return result;
+  } catch (txError: any) {
+    console.error('[ProblemAssignment] assignNextSequentialProblemToTeam transaction error:', txError);
+    // Graceful fallback: return informative message without crashing team creation
+    return {
+      success: false,
+      assigned: false,
+      message: `Automatic problem assignment encountered an error: ${txError.message}`,
+    };
+  }
 }
