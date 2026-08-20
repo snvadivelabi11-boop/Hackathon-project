@@ -313,11 +313,19 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
     // 6. Create Firestore Team Document
     await db.collection('teams').doc(allocatedTeamId).set({
       teamId: allocatedTeamId,
+      teamCode: allocatedTeamId,
       teamName: trimmedTeamName,
       leaderName: trimmedLeaderName,
       username: normalizedUsername,
       authUid: userRecord.uid,
       userUid: userRecord.uid,
+      assignedStatementId: null,
+      assignedStatementTitle: null,
+      assignedProblemId: null,
+      assignedProblemCode: null,
+      assignedProblemOrder: null,
+      assignmentStatus: 'UNASSIGNED',
+      assignmentLocked: false,
       status: 'active',
       round1Submitted: false,
       round2Submitted: false,
@@ -427,6 +435,12 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
       await db.collection('teams').doc(allocatedTeamId).update({
         assignedStatementId: psData.statementId || targetStatementId,
         assignedStatementTitle: psData.title,
+        assignedProblemId: psData.statementId || targetStatementId,
+        assignedProblemCode: psData.statementId || targetStatementId,
+        assignedProblemOrder: seq,
+        assignmentStatus: 'ASSIGNED',
+        assignmentLocked: true,
+        assignedAt: nowIso,
         updatedAt: now,
       });
 

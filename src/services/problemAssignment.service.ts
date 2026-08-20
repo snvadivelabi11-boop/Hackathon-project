@@ -1272,6 +1272,12 @@ export async function assignSpecificProblemToTeam(
         transaction.update(teamRef, {
           assignedStatementId: psData.statementId,
           assignedStatementTitle: psData.title,
+          assignedProblemId: psData.statementId,
+          assignedProblemCode: psData.statementId,
+          assignedProblemOrder: seq,
+          assignmentStatus: 'ASSIGNED',
+          assignmentLocked: true,
+          assignedAt: now,
           updatedAt: serverTimestamp(),
         });
       }
@@ -1453,6 +1459,12 @@ export async function reassignTeamProblem(
         transaction.update(teamRef, {
           assignedStatementId: newPsData.statementId,
           assignedStatementTitle: newPsData.title,
+          assignedProblemId: newPsData.statementId,
+          assignedProblemCode: newPsData.statementId,
+          assignedProblemOrder: seq,
+          assignmentStatus: 'ASSIGNED',
+          assignmentLocked: true,
+          assignedAt: now,
           updatedAt: serverTimestamp(),
         });
       }

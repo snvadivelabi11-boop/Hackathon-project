@@ -82,8 +82,12 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
       setCreatedSuccessData(null);
       setSelectedStatementId(null);
       form.resetFields();
-      fetchPreview();
-      fetchProblemStatements();
+
+      const loadInitial = async () => {
+        const generatedId = await fetchPreview();
+        await fetchProblemStatements(generatedId);
+      };
+      loadInitial();
 
       // Real-time snapshot listeners while modal is open to ensure instant reflection of database assignments
       const unsubPS = onSnapshot(collection(db, 'problemStatements'), () => {
@@ -100,21 +104,24 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
     }
   }, [open]);
 
-  const fetchPreview = async (leaderNameVal?: string) => {
+  const fetchPreview = async (leaderNameVal?: string): Promise<string> => {
     try {
       const res = await getNextTeamPreview(leaderNameVal);
-      if (res.generatedTeamId) setPreviewTeamId(res.generatedTeamId);
+      const newId = res.generatedTeamId || 'TEAM001';
+      setPreviewTeamId(newId);
       if (leaderNameVal) {
         setPreviewUsername(res.generatedUsername || generateLocalUsername(leaderNameVal));
       } else {
         setPreviewUsername('');
       }
+      return newId;
     } catch (err) {
       console.warn('[AddTeamModal] Preview calculation error:', err);
+      return 'TEAM001';
     }
   };
 
-  const fetchProblemStatements = async () => {
+  const fetchProblemStatements = async (teamIdHint?: string) => {
     setLoadingProblems(true);
     try {
       const [psSnap, occupiedSet] = await Promise.all([
@@ -169,9 +176,23 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
 
       setProblemOptions(options);
 
-      // Automatically select the first genuinely FREE problem statement in order by default
-      const firstFree = options.find((p) => p.isFree);
-      if (firstFree) {
+      // Determine intended sequential problem based on target Team number (e.g. TEAM001 -> #1, TEAM004 -> #4)
+      const currentTeamId = teamIdHint || previewTeamId || 'TEAM001';
+      const numMatch = currentTeamId.match(/\d+/);
+      const targetTeamNum = numMatch ? parseInt(numMatch[0], 10) : 1;
+
+      // 1. Exact match for target team number (e.g. TEAM004 -> Problem #4)
+      const exactMatch = options.find((p) => p.isFree && p.orderNum === targetTeamNum);
+
+      // 2. Next FREE problem in ascending order starting from targetTeamNum (e.g. #5, #6...)
+      const nextAscendingFree = options.find((p) => p.isFree && p.orderNum >= targetTeamNum);
+
+      // 3. Fallback: lowest order FREE problem anywhere in catalog
+      const fallbackLowestFree = options.find((p) => p.isFree);
+
+      const defaultSelection = exactMatch || nextAscendingFree || fallbackLowestFree;
+
+      if (defaultSelection) {
         setSelectedStatementId((prev) => {
           if (prev) {
             const currentSelected = options.find((o) => o.statementId === prev);
@@ -179,8 +200,8 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
               return prev;
             }
           }
-          form.setFieldsValue({ selectedStatementId: firstFree.statementId });
-          return firstFree.statementId;
+          form.setFieldsValue({ selectedStatementId: defaultSelection.statementId });
+          return defaultSelection.statementId;
         });
       }
     } catch (err) {

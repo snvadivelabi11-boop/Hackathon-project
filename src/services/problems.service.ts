@@ -57,10 +57,40 @@ export function subscribeToTeamAssignment(
   const assignmentRef = doc(db, 'teamProblemAssignments', teamId);
   return onSnapshot(
     assignmentRef,
-    (snap) => {
+    async (snap) => {
       if (snap.exists()) {
         callback(snap.data() as TeamProblemAssignment);
       } else {
+        // Fallback check on /teams/{teamId}
+        try {
+          const teamDoc = await getDoc(doc(db, 'teams', teamId));
+          if (teamDoc.exists() && teamDoc.data()?.assignedStatementId) {
+            const psId = teamDoc.data().assignedStatementId;
+            const psDoc = await getDoc(doc(db, 'problemStatements', psId));
+            if (psDoc.exists()) {
+              const psData = psDoc.data() as ProblemStatement;
+              const seq = psData.order || psData.sequence || 1;
+              const isPub = (psData.status === 'PUBLISHED' || psData.status === 'published' || psData.status === 'active');
+              callback({
+                teamId,
+                statementId: psData.statementId,
+                problemStatementId: psData.statementId,
+                problemSequence: seq,
+                order: seq,
+                statementTitle: psData.title,
+                description: psData.description,
+                category: psData.category || 'General',
+                difficulty: psData.difficulty || 'MEDIUM',
+                team: teamDoc.data().teamName || teamId,
+                assignedAt: teamDoc.data().assignedAt || new Date().toISOString(),
+                status: isPub ? 'PUBLISHED' : 'DRAFT',
+              } as TeamProblemAssignment);
+              return;
+            }
+          }
+        } catch (e) {
+          // ignore fallback error
+        }
         callback(null);
       }
     },

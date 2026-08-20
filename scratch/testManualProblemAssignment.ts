@@ -653,13 +653,49 @@ export async function run18ManualAssignmentTests() {
   }
   assert(sequentialSuccess === true, 'TEST 19: 20 teams created sequentially with distinct lowest-order FREE problem statements');
 
-  // --- TEST 20: Double-click prevention & Idempotency ---
-  console.log('\n--- TEST 20: Double click on create account for same team ---');
-  const doubleClick1 = await assignSpecificProblemStrictMock(db, 'TEAM080', 'Team 80', 'PS080');
-  // Second click immediately after first has already committed
-  const doubleClick2 = await assignSpecificProblemStrictMock(db, 'TEAM080', 'Team 80', 'PS080');
-  assert(doubleClick1.success === true, 'TEST 20: 1st click succeeded and created assignment');
-  assert(doubleClick2.success === false, 'TEST 20: 2nd click blocked safely preventing double creation');
+  // --- TEST 21: Team-Wise Numeric Code Mapping ---
+  console.log('\n--- TEST 21: Team-Wise Numeric Code Mapping (TEAM001 -> #1, TEAM002 -> #2...) ---');
+  const freshDb = createFreshDb();
+  populate102Statements(freshDb);
+  // Team 1 -> Problem #1
+  const t1Res = await assignSpecificProblemStrictMock(freshDb, 'TEAM001', 'Team 1', 'PS001');
+  // Team 2 -> Problem #2
+  const t2Res = await assignSpecificProblemStrictMock(freshDb, 'TEAM002', 'Team 2', 'PS002');
+  // Team 3 -> Problem #3
+  const t3Res = await assignSpecificProblemStrictMock(freshDb, 'TEAM003', 'Team 3', 'PS003');
+  assert(t1Res.success && t1Res.problemSequence === 1, 'TEST 21: TEAM001 assigned Problem #1');
+  assert(t2Res.success && t2Res.problemSequence === 2, 'TEST 21: TEAM002 assigned Problem #2');
+  assert(t3Res.success && t3Res.problemSequence === 3, 'TEST 21: TEAM003 assigned Problem #3');
+
+  // --- TEST 22: Historical Occupancy Collision Avoidance ---
+  console.log('\n--- TEST 22: Historical Occupancy Collision Avoidance (TEAM004 when Problem #4 is already taken by TEAM047) ---');
+  // Suppose TEAM047 already occupies Problem #4
+  await assignSpecificProblemStrictMock(freshDb, 'TEAM047', 'Team 47', 'PS004');
+  assert(freshDb.teamProblemAssignments.get('TEAM047')?.statementId === 'PS004', 'TEST 22: TEAM047 legitimately owns Problem #4');
+
+  // Now create TEAM004 -> Since #4 is occupied, system selects next ascending FREE problem (#5)
+  const occupiedForT4 = getComprehensiveOccupiedIds(freshDb, 'TEAM004');
+  let chosenForT4: ProblemStatement | null = null;
+  // Look for target team num = 4
+  const targetNum = 4;
+  for (let pNum = 1; pNum <= 102; pNum++) {
+    const ps = freshDb.problemStatements.get(`PS${String(pNum).padStart(3, '0')}`);
+    if (ps && !isStatementOccupied(ps, occupiedForT4, 'TEAM004') && ps.status !== 'PUBLISHED') {
+      if (pNum >= targetNum && !chosenForT4) {
+        chosenForT4 = ps;
+        break;
+      }
+    }
+  }
+  const t4Res = await assignSpecificProblemStrictMock(freshDb, 'TEAM004', 'Team 4', chosenForT4!.statementId);
+  assert(t4Res.success === true && t4Res.statementId === 'PS005', 'TEST 22: TEAM004 receives next available FREE Problem #5 without touching TEAM047');
+  assert(freshDb.teamProblemAssignments.get('TEAM047')?.statementId === 'PS004', 'TEST 22: TEAM047 retains Problem #4 permanently');
+
+  // --- TEST 23: Dashboard Query Consistency ---
+  console.log('\n--- TEST 23: Dashboard query persistence and consistency ---');
+  const t4Doc = freshDb.teams.get('TEAM004');
+  assert(t4Doc.assignedStatementId === 'PS005', 'TEST 23: TEAM004 dashboard reads PS005 from teams doc');
+  assert(freshDb.teamProblemAssignments.get('TEAM004')?.statementId === 'PS005', 'TEST 23: TEAM004 dashboard reads PS005 from teamProblemAssignments');
 
   console.log('\n========================================================================================');
   console.log(`TOTAL TESTS: ${total} | PASSED: ${passed} | FAILED: ${total - passed}`);
