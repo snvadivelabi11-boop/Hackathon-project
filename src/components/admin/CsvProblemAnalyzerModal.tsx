@@ -88,6 +88,8 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
   const [aiReviewing, setAiReviewing] = useState<boolean>(false);
   const [aiStatus, setAiStatus] = useState<'Processing' | 'Completed' | 'Failed' | 'Idle'>('Idle');
   const [aiError, setAiError] = useState<string | null>(null);
+  const [aiProgress, setAiProgress] = useState<number>(0);
+  const [aiProgressText, setAiProgressText] = useState<string>('Preparing dataset for Claude AI analysis...');
 
   // Saving State
   const [saving, setSaving] = useState<boolean>(false);
@@ -106,6 +108,8 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
     setAiReviewing(false);
     setAiStatus('Idle');
     setAiError(null);
+    setAiProgress(0);
+    setAiProgressText('Preparing dataset for Claude AI analysis...');
     setSaving(false);
     setSavedCount(0);
   };
@@ -179,11 +183,21 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
       setStep(2);
       setAiReviewing(true);
       setAiStatus('Processing');
+      setAiProgress(10);
+      setAiProgressText(`Preparing ${localResult.validItemsToSave.length} problem statements for Claude AI analysis...`);
+
       try {
         const aiResponse = await requestCsvAiAnalysis(
           localResult.validItemsToSave,
-          uploadedFile.name
+          uploadedFile.name,
+          (percent, text) => {
+            setAiProgress(percent);
+            setAiProgressText(text);
+          }
         );
+
+        setAiProgress(100);
+        setAiProgressText('Analysis complete. Reconciling results...');
 
         if (aiResponse && aiResponse.problems) {
           const enrichedQuestions = mergeAiAnalysisIntoQuestions(localResult.questions, aiResponse);
@@ -207,13 +221,14 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
           if (aiResponse.aiSuccess) {
             message.success(`AI Analysis complete: ${aiResponse.totalProblems} problem statements reviewed by Claude.`);
           } else {
-            message.warning('AI review encountered an issue, fallback validation applied.');
+            message.warning(`AI Analysis encountered an issue (${aiResponse.aiError || 'OpenRouter connection/model error'}). Local fallback applied.`);
           }
         }
       } catch (err: any) {
         console.warn('[CsvAnalyzer] AI call failed, proceeding with local analysis:', err);
         setAiError(err.message || 'AI service temporarily unavailable.');
         setAiStatus('Failed');
+        setAiProgress(100);
         setAnalysisResult({
           ...localResult,
           aiAnalysisPerformed: true,
@@ -235,12 +250,21 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
     setAiReviewing(true);
     setAiStatus('Processing');
     setAiError(null);
+    setAiProgress(15);
+    setAiProgressText(`Retrying Claude AI analysis on ${analysisResult.validItemsToSave.length} problem statements...`);
 
     try {
       const aiResponse = await requestCsvAiAnalysis(
         analysisResult.validItemsToSave,
-        uploadedFile?.name || 'questions.csv'
+        uploadedFile?.name || 'questions.csv',
+        (percent, text) => {
+          setAiProgress(percent);
+          setAiProgressText(text);
+        }
       );
+
+      setAiProgress(100);
+      setAiProgressText('Analysis complete. Reconciling results...');
 
       if (aiResponse && aiResponse.problems) {
         const enrichedQuestions = mergeAiAnalysisIntoQuestions(analysisResult.questions, aiResponse);
@@ -259,12 +283,17 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
             aiAnalyzedCount: aiResponse.totalProblems,
           },
         });
-        setAiStatus('Completed');
-        message.success('AI Quality Review updated successfully.');
+        setAiStatus(aiResponse.aiSuccess ? 'Completed' : 'Failed');
+        if (aiResponse.aiSuccess) {
+          message.success('AI Quality Review completed successfully.');
+        } else {
+          message.warning(`AI review failed (${aiResponse.aiError || 'OpenRouter error'}). Local fallback applied.`);
+        }
       }
     } catch (err: any) {
       setAiError(err.message || 'AI review failed.');
       setAiStatus('Failed');
+      setAiProgress(100);
       message.error(`AI review failed: ${err.message}`);
     } finally {
       setAiReviewing(false);
@@ -676,10 +705,15 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
             <Title level={4} style={{ color: '#0f172a', marginBottom: 8 }}>
               Running Claude AI Problem Statement Analysis...
             </Title>
-            <Paragraph type="secondary" style={{ maxWidth: 520, margin: '0 auto 24px' }}>
-              Analyzing actual problem statement descriptions, determining ordering, reasoning, confidence scores, and domain categories via OpenRouter Claude.
+            <Paragraph type="secondary" style={{ maxWidth: 520, margin: '0 auto 20px', minHeight: 40 }}>
+              {aiProgressText}
             </Paragraph>
-            <Progress percent={75} status="active" strokeColor="#7c3aed" style={{ maxWidth: 400 }} />
+            <Progress
+              percent={aiProgress}
+              status={aiStatus === 'Failed' ? 'exception' : 'active'}
+              strokeColor="#7c3aed"
+              style={{ maxWidth: 400 }}
+            />
           </div>
         )}
 
@@ -692,7 +726,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
                 <Text strong>AI Analysis Status:</Text>
                 {aiStatus === 'Processing' && <Tag icon={<SyncOutlined spin />} color="processing">Processing</Tag>}
                 {aiStatus === 'Completed' && <Tag icon={<CheckCircleOutlined />} color="success">Completed ({analysisResult.aiModelUsed || 'Claude Sonnet'})</Tag>}
-                {aiStatus === 'Failed' && <Tag icon={<WarningOutlined />} color="error">Failed (Local Fallback Active)</Tag>}
+                {aiStatus === 'Failed' && <Tag icon={<WarningOutlined />} color="error">AI Failed (Local Fallback Active)</Tag>}
                 {aiStatus === 'Idle' && <Tag color="default">Not Run</Tag>}
               </Space>
 
@@ -759,11 +793,11 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
 
             {analysisResult.aiAnalysisPerformed && !analysisResult.aiAnalysisSuccess && (
               <Alert
-                message="Local Validation Active (AI Review Unavailable)"
+                message="AI Analysis Failed — Local Fallback Active"
                 description={
                   analysisResult.aiAnalysisError
-                    ? `Local parsing and duplicate checks succeeded. AI error: ${analysisResult.aiAnalysisError}`
-                    : 'Local parsing and duplicate checks succeeded. You can proceed with local data or retry AI review.'
+                    ? `OpenRouter connection/model issue: ${analysisResult.aiAnalysisError}. Local parsing preserved all rows.`
+                    : 'OpenRouter connection/model issue encountered. Local parsing and validation preserved all rows.'
                 }
                 type="warning"
                 showIcon

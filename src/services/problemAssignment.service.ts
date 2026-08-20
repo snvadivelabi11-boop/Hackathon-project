@@ -1332,6 +1332,25 @@ export async function assignSpecificProblemToTeam(
       // =========================================================================
       // PHASE 2 — VALIDATE
       // =========================================================================
+      if (!teamSnap.exists()) {
+        return {
+          success: false,
+          assigned: false,
+          message: `Team ${teamId} does not exist in database.`,
+        };
+      }
+
+      if (existingAssignSnap.exists()) {
+        const existingData = existingAssignSnap.data();
+        if (existingData?.status === 'PUBLISHED' || existingData?.status === 'published') {
+          return {
+            success: false,
+            assigned: false,
+            message: `Team ${teamId} already has an active published assignment (${existingData.statementId}) which cannot be overwritten.`,
+          };
+        }
+      }
+
       if (!psSnap.exists()) {
         return {
           success: false,

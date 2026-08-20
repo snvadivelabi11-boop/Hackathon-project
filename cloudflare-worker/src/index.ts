@@ -43,7 +43,7 @@ export interface AnalyzedProblemOutputItem {
 }
 
 const BATCH_CHUNK_SIZE = 20;
-const DEFAULT_MODEL = 'anthropic/claude-sonnet-4.6';
+const DEFAULT_MODEL = '~anthropic/claude-sonnet-latest';
 
 /**
  * Builds CORS headers for responses

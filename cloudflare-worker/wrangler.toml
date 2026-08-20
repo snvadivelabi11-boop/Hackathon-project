@@ -3,7 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2024-09-23"
 
 [vars]
-OPENROUTER_MODEL = "anthropic/claude-sonnet-4.6"
+OPENROUTER_MODEL = "~anthropic/claude-sonnet-latest"
 ALLOWED_ORIGINS = "*"
 
 # Secret: OPENROUTER_API_KEY (set via: npx wrangler secret put OPENROUTER_API_KEY)

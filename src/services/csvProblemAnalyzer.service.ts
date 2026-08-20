@@ -722,13 +722,16 @@ export function analyzeCsvProblemStatements(
 /**
  * Helper to generate structured fallback results if worker is temporarily unreachable
  */
-export function generateClientFallbackResponse(validQuestions: AnalyzedQuestionItem[]): CsvAiAnalysisResponse {
+export function generateClientFallbackResponse(
+  validQuestions: AnalyzedQuestionItem[],
+  customError?: string
+): CsvAiAnalysisResponse {
   return {
     success: true,
     totalProblems: validQuestions.length,
-    aiModelUsed: 'anthropic/claude-sonnet-4.6 (Local Fallback)',
+    aiModelUsed: '~anthropic/claude-sonnet-latest (Local Fallback)',
     aiSuccess: false,
-    aiError: 'Cloudflare Worker backend offline or unreachable',
+    aiError: customError || 'Cloudflare Worker backend offline or unreachable',
     problems: validQuestions.map((item, idx) => {
       const seq = item.sequence ?? idx + 1;
       const docId = item.problemStatementId || `PS${String(seq).padStart(3, '0')}`;
@@ -763,7 +766,8 @@ export function generateClientFallbackResponse(validQuestions: AnalyzedQuestionI
  */
 export async function requestCsvAiAnalysis(
   validQuestions: AnalyzedQuestionItem[],
-  fileName: string
+  fileName: string,
+  onProgress?: (percent: number, statusText: string) => void
 ): Promise<CsvAiAnalysisResponse> {
   const payload = {
     fileName,
@@ -790,6 +794,24 @@ export async function requestCsvAiAnalysis(
     ? baseWorkerUrl
     : `${baseWorkerUrl.replace(/\/+$/, '')}/analyze-csv`;
 
+  onProgress?.(15, `Sending ${validQuestions.length} problem statements to Cloudflare Worker edge...`);
+
+  // Progress heartbeat during network processing
+  let currentProgress = 20;
+  const progressInterval = setInterval(() => {
+    if (currentProgress < 85) {
+      currentProgress += 10;
+      const chunkCount = Math.ceil(validQuestions.length / 20);
+      onProgress?.(
+        currentProgress,
+        `Claude AI analyzing ${validQuestions.length} statements (${chunkCount} batch chunk${chunkCount > 1 ? 's' : ''})...`
+      );
+    }
+  }, 3500);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 75000); // 75s safe timeout
+
   try {
     const token = await auth.currentUser?.getIdToken().catch(() => null);
     const headers: Record<string, string> = {
@@ -803,19 +825,42 @@ export async function requestCsvAiAnalysis(
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
+      signal: controller.signal,
     });
+
+    clearInterval(progressInterval);
+    clearTimeout(timeoutId);
 
     if (res.ok) {
       const data: CsvAiAnalysisResponse = await res.json();
       if (data && Array.isArray(data.problems) && data.problems.length > 0) {
+        onProgress?.(95, 'Reconciling 1:1 problem statement analysis results...');
         return data;
       }
+    } else {
+      const errText = await res.text().catch(() => '');
+      let cleanMsg = `Worker HTTP error (${res.status})`;
+      try {
+        const parsed = JSON.parse(errText);
+        cleanMsg = parsed.error || parsed.aiError || cleanMsg;
+      } catch {
+        if (errText) cleanMsg = `${cleanMsg}: ${errText.slice(0, 150)}`;
+      }
+      console.warn('[CsvAnalyzer] Worker returned non-200:', cleanMsg);
+      return generateClientFallbackResponse(validQuestions, cleanMsg);
     }
   } catch (workerErr: any) {
-    console.warn('[CsvAnalyzer] Cloudflare Worker fetch error, applying fallback:', workerErr.message);
+    clearInterval(progressInterval);
+    clearTimeout(timeoutId);
+    const isTimeout = workerErr.name === 'AbortError';
+    const errorMsg = isTimeout
+      ? 'OpenRouter AI analysis timed out after 75s. Local validation applied.'
+      : (workerErr.message || 'Cloudflare Worker fetch error');
+    console.warn('[CsvAnalyzer] Cloudflare Worker fetch error, applying fallback:', errorMsg);
+    return generateClientFallbackResponse(validQuestions, errorMsg);
   }
 
-  // Graceful fallback if Cloudflare Worker endpoint is not reachable
+  // Graceful fallback
   return generateClientFallbackResponse(validQuestions);
 }
 
