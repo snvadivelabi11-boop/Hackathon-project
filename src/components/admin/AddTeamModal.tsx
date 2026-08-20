@@ -528,6 +528,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
                 type="primary"
                 htmlType="submit"
                 loading={loading}
+                disabled={loading || !selectedStatementId || !selectedProblem?.isFree}
                 icon={<UserAddOutlined />}
                 style={{ background: '#1677ff', borderRadius: 8, fontWeight: 700 }}
               >

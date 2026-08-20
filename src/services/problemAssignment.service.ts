@@ -976,8 +976,29 @@ export async function assignNextSequentialProblemToTeam(
     }
   }
 
-  // 2. Pre-fetch comprehensive occupied statement IDs across all collections
+  // 2. Pre-fetch comprehensive occupied statement IDs and problem statements outside transaction
   const occupiedSet = await getComprehensiveOccupiedStatementIds(teamId);
+  const psSnap = await getDocs(collection(db, 'problemStatements'));
+  if (psSnap.empty) {
+    return {
+      success: true,
+      assigned: false,
+      message: 'No problem statements found in catalog. Team created without default problem.',
+    };
+  }
+
+  const allStatements: ProblemStatement[] = [];
+  psSnap.forEach((d) => {
+    allStatements.push({ statementId: d.id, ...d.data() } as ProblemStatement);
+  });
+
+  // Sort deterministically by Admin Order (1..N), sequence, and numeric statementId
+  allStatements.sort((a, b) => {
+    const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence !== undefined && a.sequence !== null ? a.sequence : 0);
+    const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence !== undefined && b.sequence !== null ? b.sequence : 0);
+    if (ordA !== ordB) return ordA - ordB;
+    return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
+  });
 
   // 3. Atomic assignment via Firestore transaction
   try {
@@ -985,7 +1006,7 @@ export async function assignNextSequentialProblemToTeam(
     const teamRef = doc(db, 'teams', teamId);
 
     const result = await runTransaction(db, async (transaction) => {
-      // Re-verify existing team assignment inside transaction
+      // PHASE 1 — READS FIRST
       const assignCheck = await transaction.get(existingAssignRef);
       if (assignCheck.exists()) {
         const existingData = assignCheck.data();
@@ -1012,29 +1033,6 @@ export async function assignNextSequentialProblemToTeam(
           message: `Team ${teamId} already has assigned problem ${teamData.assignedStatementId}.`,
         };
       }
-
-      // Fetch all problem statements
-      const psSnap = await getDocs(collection(db, 'problemStatements'));
-      if (psSnap.empty) {
-        return {
-          success: true,
-          assigned: false,
-          message: 'No problem statements found in catalog. Team created without default problem.',
-        };
-      }
-
-      const allStatements: ProblemStatement[] = [];
-      psSnap.forEach((d) => {
-        allStatements.push({ statementId: d.id, ...d.data() } as ProblemStatement);
-      });
-
-      // Sort deterministically by Admin Order (1..N), sequence, and numeric statementId
-      allStatements.sort((a, b) => {
-        const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence !== undefined && a.sequence !== null ? a.sequence : 0);
-        const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence !== undefined && b.sequence !== null ? b.sequence : 0);
-        if (ordA !== ordB) return ordA - ordB;
-        return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
-      });
 
       // Find the first unassigned problem statement using occupiedSet and transaction.get
       let nextProblem: ProblemStatement | null = null;
@@ -1160,8 +1158,9 @@ export async function assignNextSequentialProblemToTeam(
 }
 
 /**
- * Assigns a specific Problem Statement chosen by the Admin to a Team.
+ * Explicitly assigns a SPECIFIC, Admin-selected Problem Statement to a Team.
  * Validates that the problem is FREE and executes atomically via Firestore runTransaction.
+ * STRICT RULE: All reads are performed before all writes inside the transaction.
  */
 export async function assignSpecificProblemToTeam(
   teamId: string,
@@ -1173,14 +1172,26 @@ export async function assignSpecificProblemToTeam(
     return { success: false, assigned: false, message: 'Invalid team ID or statement ID provided.' };
   }
 
+  // Pre-fetch comprehensive occupied statement IDs across all collections outside transaction
+  const occupiedSet = await getComprehensiveOccupiedStatementIds(teamId);
+
   try {
     const existingAssignRef = doc(db, 'teamProblemAssignments', teamId);
     const teamRef = doc(db, 'teams', teamId);
     const psRef = doc(db, 'problemStatements', statementId);
+    const legacyRef = doc(db, 'problemAssignments', `${teamId}_${statementId}`);
 
     const result = await runTransaction(db, async (transaction) => {
-      // 1. Check if problem statement exists and is FREE
+      // =========================================================================
+      // PHASE 1 — ALL READS FIRST (No writes allowed before all reads complete)
+      // =========================================================================
       const psSnap = await transaction.get(psRef);
+      const teamSnap = await transaction.get(teamRef);
+      const existingAssignSnap = await transaction.get(existingAssignRef);
+
+      // =========================================================================
+      // PHASE 2 — VALIDATE
+      // =========================================================================
       if (!psSnap.exists()) {
         return {
           success: false,
@@ -1190,10 +1201,15 @@ export async function assignSpecificProblemToTeam(
       }
 
       const psData = psSnap.data() as ProblemStatement;
-      const occupiedSet = await getComprehensiveOccupiedStatementIds(teamId);
 
-      // If occupied by another team, fail safely with the exact required message
-      if (isStatementOccupied(psData, occupiedSet, teamId)) {
+      // If occupied by another team or published, fail safely with user-friendly message
+      if (
+        isStatementOccupied(psData, occupiedSet, teamId) ||
+        psData.status === 'PUBLISHED' ||
+        psData.status === 'published' ||
+        psData.status === 'active' ||
+        (psData.assignedTeamId && psData.assignedTeamId !== teamId)
+      ) {
         return {
           success: false,
           assigned: false,
@@ -1202,10 +1218,13 @@ export async function assignSpecificProblemToTeam(
       }
 
       const now = new Date().toISOString();
-      const isPublished = psData.status === 'published' || psData.status === 'PUBLISHED';
+      const isPublished = (psData.status as string) === 'published' || (psData.status as string) === 'PUBLISHED';
       const seq = psData.order !== undefined && psData.order !== null ? psData.order : (psData.sequence || 1);
 
-      // Write /teamProblemAssignments/{teamId}
+      // =========================================================================
+      // PHASE 3 — ALL WRITES (No reads after any write)
+      // =========================================================================
+      // 1. Write /teamProblemAssignments/{teamId}
       transaction.set(
         existingAssignRef,
         {
@@ -1241,15 +1260,14 @@ export async function assignSpecificProblemToTeam(
         { merge: true }
       );
 
-      // Update /problemStatements/{statementId}
+      // 2. Update /problemStatements/{statementId}
       transaction.update(psRef, {
         assignedTeamId: teamId,
         assignedTeamName: teamName,
         updatedAt: serverTimestamp(),
       });
 
-      // Update /teams/{teamId}
-      const teamSnap = await transaction.get(teamRef);
+      // 3. Update /teams/{teamId}
       if (teamSnap.exists()) {
         transaction.update(teamRef, {
           assignedStatementId: psData.statementId,
@@ -1258,8 +1276,7 @@ export async function assignSpecificProblemToTeam(
         });
       }
 
-      // Legacy table
-      const legacyRef = doc(db, 'problemAssignments', `${teamId}_${psData.statementId}`);
+      // 4. Write /problemAssignments/{teamId}_{statementId} (legacy table)
       transaction.set(
         legacyRef,
         {
@@ -1301,6 +1318,7 @@ export async function assignSpecificProblemToTeam(
 /**
  * Reassigns a Team's Problem Statement to a new FREE Problem Statement.
  * Atomically releases the old assignment and sets the new assignment.
+ * STRICT RULE: All reads are performed before all writes inside the transaction.
  */
 export async function reassignTeamProblem(
   teamId: string,
@@ -1312,14 +1330,40 @@ export async function reassignTeamProblem(
     return { success: false, assigned: false, message: 'Invalid team ID or statement ID provided.' };
   }
 
+  // Pre-fetch comprehensive occupied statement IDs outside transaction
+  const occupiedSet = await getComprehensiveOccupiedStatementIds(teamId);
+
   try {
     const existingAssignRef = doc(db, 'teamProblemAssignments', teamId);
     const teamRef = doc(db, 'teams', teamId);
     const newPsRef = doc(db, 'problemStatements', newStatementId);
 
     const result = await runTransaction(db, async (transaction) => {
-      // 1. Verify new statement exists and is FREE
+      // =========================================================================
+      // PHASE 1 — ALL READS FIRST (No writes allowed before all reads complete)
+      // =========================================================================
       const newPsSnap = await transaction.get(newPsRef);
+      const existingAssignSnap = await transaction.get(existingAssignRef);
+      const teamSnap = await transaction.get(teamRef);
+
+      // Determine old statement ID to release
+      let oldStatementId: string | null = null;
+      if (existingAssignSnap.exists()) {
+        oldStatementId = existingAssignSnap.data().statementId || null;
+      } else if (teamSnap.exists()) {
+        oldStatementId = teamSnap.data().assignedStatementId || null;
+      }
+
+      let oldPsSnap: any = null;
+      let oldPsRef: any = null;
+      if (oldStatementId && oldStatementId !== newStatementId) {
+        oldPsRef = doc(db, 'problemStatements', oldStatementId);
+        oldPsSnap = await transaction.get(oldPsRef);
+      }
+
+      // =========================================================================
+      // PHASE 2 — VALIDATE
+      // =========================================================================
       if (!newPsSnap.exists()) {
         return {
           success: false,
@@ -1329,8 +1373,13 @@ export async function reassignTeamProblem(
       }
 
       const newPsData = newPsSnap.data() as ProblemStatement;
-      const occupiedSet = await getComprehensiveOccupiedStatementIds(teamId);
-      if (isStatementOccupied(newPsData, occupiedSet, teamId)) {
+      if (
+        isStatementOccupied(newPsData, occupiedSet, teamId) ||
+        newPsData.status === 'PUBLISHED' ||
+        newPsData.status === 'published' ||
+        newPsData.status === 'active' ||
+        (newPsData.assignedTeamId && newPsData.assignedTeamId !== teamId)
+      ) {
         return {
           success: false,
           assigned: false,
@@ -1338,39 +1387,25 @@ export async function reassignTeamProblem(
         };
       }
 
-      // 2. Check old assignment to release
-      const currentAssignSnap = await transaction.get(existingAssignRef);
-      let oldStatementId: string | null = null;
-      if (currentAssignSnap.exists()) {
-        oldStatementId = currentAssignSnap.data().statementId || null;
-      } else {
-        const teamSnap = await transaction.get(teamRef);
-        if (teamSnap.exists()) {
-          oldStatementId = teamSnap.data().assignedStatementId || null;
-        }
-      }
+      const now = new Date().toISOString();
+      const isPublished = (newPsData.status as string) === 'published' || (newPsData.status as string) === 'PUBLISHED';
+      const seq = newPsData.order !== undefined && newPsData.order !== null ? newPsData.order : (newPsData.sequence || 1);
 
-      // 3. If old statement exists and is different from new, release it
-      if (oldStatementId && oldStatementId !== newStatementId) {
-        const oldPsRef = doc(db, 'problemStatements', oldStatementId);
-        const oldPsSnap = await transaction.get(oldPsRef);
-        if (oldPsSnap.exists()) {
-          transaction.update(oldPsRef, {
-            assignedTeamId: null,
-            assignedTeamName: null,
-            updatedAt: serverTimestamp(),
-          });
-        }
-        // Clean up old legacy assignment record
+      // =========================================================================
+      // PHASE 3 — ALL WRITES (No reads after any write)
+      // =========================================================================
+      // 1. Release old statement if any
+      if (oldStatementId && oldStatementId !== newStatementId && oldPsRef && oldPsSnap?.exists()) {
+        transaction.update(oldPsRef, {
+          assignedTeamId: null,
+          assignedTeamName: null,
+          updatedAt: serverTimestamp(),
+        });
         const oldLegacyRef = doc(db, 'problemAssignments', `${teamId}_${oldStatementId}`);
         transaction.delete(oldLegacyRef);
       }
 
-      const now = new Date().toISOString();
-      const isPublished = newPsData.status === 'published' || newPsData.status === 'PUBLISHED';
-      const seq = newPsData.order !== undefined && newPsData.order !== null ? newPsData.order : (newPsData.sequence || 1);
-
-      // 4. Assign new statement
+      // 2. Assign new statement in /teamProblemAssignments/{teamId}
       transaction.set(
         existingAssignRef,
         {
@@ -1406,13 +1441,14 @@ export async function reassignTeamProblem(
         { merge: true }
       );
 
+      // 3. Update new problem statement in /problemStatements/{statementId}
       transaction.update(newPsRef, {
         assignedTeamId: teamId,
         assignedTeamName: teamName,
         updatedAt: serverTimestamp(),
       });
 
-      const teamSnap = await transaction.get(teamRef);
+      // 4. Update team document in /teams/{teamId}
       if (teamSnap.exists()) {
         transaction.update(teamRef, {
           assignedStatementId: newPsData.statementId,
@@ -1420,6 +1456,24 @@ export async function reassignTeamProblem(
           updatedAt: serverTimestamp(),
         });
       }
+
+      // 5. Write new legacy record in /problemAssignments/{teamId}_{statementId}
+      const newLegacyRef = doc(db, 'problemAssignments', `${teamId}_${newPsData.statementId}`);
+      transaction.set(
+        newLegacyRef,
+        {
+          assignmentId: `${teamId}_${newPsData.statementId}`,
+          teamId,
+          problemStatementId: newPsData.statementId,
+          statementId: newPsData.statementId,
+          assignmentSequence: seq,
+          status: isPublished ? 'PUBLISHED' : 'DRAFT',
+          assignedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        },
+        { merge: true }
+      );
 
       return {
         success: true,
@@ -1438,7 +1492,7 @@ export async function reassignTeamProblem(
     return {
       success: false,
       assigned: false,
-      message: `Reassignment error: ${err.message}`,
+      message: `Problem reassignment encountered an error: ${err.message}`,
     };
   }
 }

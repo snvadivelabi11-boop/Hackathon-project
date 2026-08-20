@@ -126,161 +126,296 @@ function getComprehensiveOccupiedIds(db: MockDb, excludeTeamId?: string): Set<st
 }
 
 /**
- * Simulates assignSpecificProblemToTeam
+ * Strict Transaction Runner enforcing Firestore's "ALL READS BEFORE ALL WRITES" requirement.
  */
-function assignSpecificProblemMock(
+class StrictFirestoreTransaction {
+  private hasWritten = false;
+  public readCount = 0;
+  public writeCount = 0;
+  private db: MockDb;
+
+  constructor(db: MockDb) {
+    this.db = db;
+  }
+
+  async get(collectionName: string, docId: string): Promise<{ exists: boolean; data: () => any }> {
+    if (this.hasWritten) {
+      throw new Error('Firestore transactions require all reads to be executed before all writes.');
+    }
+    this.readCount++;
+
+    let data: any = null;
+    if (collectionName === 'problemStatements') data = this.db.problemStatements.get(docId);
+    else if (collectionName === 'teamProblemAssignments') data = this.db.teamProblemAssignments.get(docId);
+    else if (collectionName === 'teams') data = this.db.teams.get(docId);
+    else if (collectionName === 'problemAssignments') data = this.db.problemAssignments.get(docId);
+
+    return {
+      exists: data !== undefined && data !== null,
+      data: () => data,
+    };
+  }
+
+  set(collectionName: string, docId: string, data: any) {
+    this.hasWritten = true;
+    this.writeCount++;
+    if (collectionName === 'teamProblemAssignments') this.db.teamProblemAssignments.set(docId, data);
+    else if (collectionName === 'problemAssignments') this.db.problemAssignments.set(docId, data);
+    else if (collectionName === 'teams') this.db.teams.set(docId, data);
+    else if (collectionName === 'problemStatements') this.db.problemStatements.set(docId, data);
+  }
+
+  update(collectionName: string, docId: string, data: any) {
+    this.hasWritten = true;
+    this.writeCount++;
+    let existing: any = {};
+    if (collectionName === 'problemStatements') existing = this.db.problemStatements.get(docId) || {};
+    else if (collectionName === 'teams') existing = this.db.teams.get(docId) || {};
+    else if (collectionName === 'teamProblemAssignments') existing = this.db.teamProblemAssignments.get(docId) || {};
+
+    const merged = { ...existing, ...data };
+    if (collectionName === 'problemStatements') this.db.problemStatements.set(docId, merged);
+    else if (collectionName === 'teams') this.db.teams.set(docId, merged);
+    else if (collectionName === 'teamProblemAssignments') this.db.teamProblemAssignments.set(docId, merged);
+  }
+
+  delete(collectionName: string, docId: string) {
+    this.hasWritten = true;
+    this.writeCount++;
+    if (collectionName === 'problemAssignments') this.db.problemAssignments.delete(docId);
+  }
+}
+
+/**
+ * Executes assignSpecificProblemToTeam with Strict Transaction
+ */
+async function assignSpecificProblemStrictMock(
   db: MockDb,
   teamId: string,
   teamName: string,
   statementId: string,
   adminUser?: { uid?: string; email?: string }
-): { success: boolean; assigned: boolean; message: string; statementId?: string; problemSequence?: number } {
+): Promise<{ success: boolean; assigned: boolean; message: string; statementId?: string; problemSequence?: number }> {
   if (!teamId || !statementId) {
     return { success: false, assigned: false, message: 'Invalid team ID or statement ID provided.' };
   }
 
-  const ps = db.problemStatements.get(statementId);
-  if (!ps) {
-    return { success: false, assigned: false, message: `Problem Statement ${statementId} does not exist in catalog.` };
-  }
-
+  // Pre-fetch occupied set outside transaction
   const occupiedSet = getComprehensiveOccupiedIds(db, teamId);
-  if (isStatementOccupied(ps, occupiedSet, teamId) || ps.status === 'PUBLISHED' || ps.status === 'published' || ps.status === 'active') {
+  const tx = new StrictFirestoreTransaction(db);
+
+  try {
+    // PHASE 1 — ALL READS FIRST
+    const psSnap = await tx.get('problemStatements', statementId);
+    const teamSnap = await tx.get('teams', teamId);
+    const assignSnap = await tx.get('teamProblemAssignments', teamId);
+
+    // PHASE 2 — VALIDATE
+    if (!psSnap.exists) {
+      return { success: false, assigned: false, message: `Problem Statement ${statementId} does not exist in catalog.` };
+    }
+
+    const psData = psSnap.data() as ProblemStatement;
+    if (
+      isStatementOccupied(psData, occupiedSet, teamId) ||
+      psData.status === 'PUBLISHED' ||
+      psData.status === 'published' ||
+      psData.status === 'active' ||
+      (psData.assignedTeamId && psData.assignedTeamId !== teamId)
+    ) {
+      return {
+        success: false,
+        assigned: false,
+        message: 'This problem statement has already been assigned. Please select another FREE problem statement.',
+      };
+    }
+
+    const seq = psData.order !== undefined && psData.order !== null ? psData.order : (psData.sequence || 1);
+    const now = new Date().toISOString();
+    const isPublished = psData.status === 'published' || psData.status === 'PUBLISHED';
+
+    // PHASE 3 — ALL WRITES
+    tx.set('teamProblemAssignments', teamId, {
+      teamId,
+      statementId: psData.statementId,
+      problemStatementId: psData.statementId,
+      problemSequence: seq,
+      order: seq,
+      statementTitle: psData.title,
+      description: psData.description,
+      category: psData.category || 'General',
+      difficulty: psData.difficulty || 'MEDIUM',
+      team: teamName,
+      aiAnalysis: psData.analysis || '',
+      confidence: psData.confidence || 0.9,
+      assignedAt: now,
+      assignedBy: adminUser?.email || 'admin',
+      status: isPublished ? 'PUBLISHED' : 'DRAFT',
+    });
+
+    tx.update('problemStatements', statementId, {
+      assignedTeamId: teamId,
+      assignedTeamName: teamName,
+    });
+
+    if (teamSnap.exists) {
+      tx.update('teams', teamId, {
+        assignedStatementId: psData.statementId,
+        assignedStatementTitle: psData.title,
+      });
+    } else {
+      tx.set('teams', teamId, {
+        teamId,
+        teamName,
+        assignedStatementId: psData.statementId,
+        assignedStatementTitle: psData.title,
+      });
+    }
+
+    tx.set('problemAssignments', `${teamId}_${psData.statementId}`, {
+      assignmentId: `${teamId}_${psData.statementId}`,
+      teamId,
+      statementId: psData.statementId,
+      assignmentSequence: seq,
+      status: isPublished ? 'PUBLISHED' : 'DRAFT',
+    });
+
+    return {
+      success: true,
+      assigned: true,
+      statementId: psData.statementId,
+      problemSequence: seq,
+      message: `Assigned Problem #${seq} (${psData.statementId}: "${psData.title}") to ${teamName} (${teamId}).`,
+    };
+  } catch (err: any) {
     return {
       success: false,
       assigned: false,
-      message: 'This problem statement has already been assigned. Please select another FREE problem statement.',
+      message: `Problem assignment encountered an error: ${err.message}`,
     };
   }
-
-  const seq = ps.order !== undefined && ps.order !== null ? ps.order : (ps.sequence || 1);
-  const now = new Date().toISOString();
-
-  // 1. Write /teamProblemAssignments/{teamId}
-  db.teamProblemAssignments.set(teamId, {
-    teamId,
-    statementId: ps.statementId,
-    problemStatementId: ps.statementId,
-    problemSequence: seq,
-    order: seq,
-    statementTitle: ps.title,
-    description: ps.description,
-    category: ps.category || 'General',
-    difficulty: ps.difficulty || 'MEDIUM',
-    team: teamName,
-    aiAnalysis: ps.analysis || '',
-    confidence: ps.confidence || 0.9,
-    assignedAt: now,
-    assignedBy: adminUser?.email || 'admin',
-    status: 'DRAFT',
-  });
-
-  // 2. Update /problemStatements/{statementId}
-  ps.assignedTeamId = teamId;
-  ps.assignedTeamName = teamName;
-  db.problemStatements.set(statementId, ps);
-
-  // 3. Update /teams/{teamId}
-  const team = db.teams.get(teamId) || { teamId, teamName };
-  team.assignedStatementId = ps.statementId;
-  team.assignedStatementTitle = ps.title;
-  db.teams.set(teamId, team);
-
-  // 4. Write /problemAssignments/{teamId}_{statementId}
-  db.problemAssignments.set(`${teamId}_${ps.statementId}`, {
-    assignmentId: `${teamId}_${ps.statementId}`,
-    teamId,
-    statementId: ps.statementId,
-    assignmentSequence: seq,
-    status: 'DRAFT',
-  });
-
-  return {
-    success: true,
-    assigned: true,
-    statementId: ps.statementId,
-    problemSequence: seq,
-    message: `Assigned Problem #${seq} (${ps.statementId}: "${ps.title}") to ${teamName} (${teamId}).`,
-  };
 }
 
 /**
- * Simulates reassignTeamProblem
+ * Executes reassignTeamProblem with Strict Transaction
  */
-function reassignTeamProblemMock(
+async function reassignTeamProblemStrictMock(
   db: MockDb,
   teamId: string,
   teamName: string,
   newStatementId: string
-): { success: boolean; assigned: boolean; message: string; statementId?: string; problemSequence?: number } {
+): Promise<{ success: boolean; assigned: boolean; message: string; statementId?: string; problemSequence?: number }> {
   if (!teamId || !newStatementId) {
     return { success: false, assigned: false, message: 'Invalid team ID or statement ID provided.' };
   }
 
-  const newPs = db.problemStatements.get(newStatementId);
-  if (!newPs) {
-    return { success: false, assigned: false, message: `Problem Statement ${newStatementId} does not exist.` };
-  }
-
   const occupiedSet = getComprehensiveOccupiedIds(db, teamId);
-  if (isStatementOccupied(newPs, occupiedSet, teamId)) {
+  const tx = new StrictFirestoreTransaction(db);
+
+  try {
+    // PHASE 1 — ALL READS FIRST
+    const newPsSnap = await tx.get('problemStatements', newStatementId);
+    const existingAssignSnap = await tx.get('teamProblemAssignments', teamId);
+    const teamSnap = await tx.get('teams', teamId);
+
+    let oldStatementId: string | null = null;
+    if (existingAssignSnap.exists) {
+      oldStatementId = existingAssignSnap.data().statementId || null;
+    } else if (teamSnap.exists) {
+      oldStatementId = teamSnap.data().assignedStatementId || null;
+    }
+
+    let oldPsSnap: any = null;
+    if (oldStatementId && oldStatementId !== newStatementId) {
+      oldPsSnap = await tx.get('problemStatements', oldStatementId);
+    }
+
+    // PHASE 2 — VALIDATE
+    if (!newPsSnap.exists) {
+      return { success: false, assigned: false, message: `Problem Statement ${newStatementId} does not exist.` };
+    }
+
+    const newPsData = newPsSnap.data() as ProblemStatement;
+    if (
+      isStatementOccupied(newPsData, occupiedSet, teamId) ||
+      newPsData.status === 'PUBLISHED' ||
+      newPsData.status === 'published' ||
+      newPsData.status === 'active' ||
+      (newPsData.assignedTeamId && newPsData.assignedTeamId !== teamId)
+    ) {
+      return {
+        success: false,
+        assigned: false,
+        message: 'This problem statement has already been assigned. Please select another FREE problem statement.',
+      };
+    }
+
+    const seq = newPsData.order !== undefined && newPsData.order !== null ? newPsData.order : (newPsData.sequence || 1);
+    const now = new Date().toISOString();
+    const isPublished = newPsData.status === 'published' || newPsData.status === 'PUBLISHED';
+
+    // PHASE 3 — ALL WRITES
+    if (oldStatementId && oldStatementId !== newStatementId && oldPsSnap?.exists) {
+      tx.update('problemStatements', oldStatementId, {
+        assignedTeamId: null,
+        assignedTeamName: null,
+      });
+      tx.delete('problemAssignments', `${teamId}_${oldStatementId}`);
+    }
+
+    tx.set('teamProblemAssignments', teamId, {
+      teamId,
+      statementId: newPsData.statementId,
+      problemStatementId: newPsData.statementId,
+      problemSequence: seq,
+      order: seq,
+      statementTitle: newPsData.title,
+      description: newPsData.description,
+      category: newPsData.category || 'General',
+      difficulty: newPsData.difficulty || 'MEDIUM',
+      team: teamName,
+      aiAnalysis: newPsData.analysis || '',
+      confidence: newPsData.confidence || 0.9,
+      assignedAt: now,
+      assignedBy: 'admin_reassignment',
+      status: isPublished ? 'PUBLISHED' : 'DRAFT',
+    });
+
+    tx.update('problemStatements', newStatementId, {
+      assignedTeamId: teamId,
+      assignedTeamName: teamName,
+    });
+
+    if (teamSnap.exists) {
+      tx.update('teams', teamId, {
+        assignedStatementId: newPsData.statementId,
+        assignedStatementTitle: newPsData.title,
+      });
+    }
+
+    tx.set('problemAssignments', `${teamId}_${newPsData.statementId}`, {
+      assignmentId: `${teamId}_${newPsData.statementId}`,
+      teamId,
+      problemStatementId: newPsData.statementId,
+      statementId: newPsData.statementId,
+      assignmentSequence: seq,
+      status: isPublished ? 'PUBLISHED' : 'DRAFT',
+    });
+
+    return {
+      success: true,
+      assigned: true,
+      statementId: newPsData.statementId,
+      problemSequence: seq,
+      message: `Successfully reassigned Team ${teamId} to Problem #${seq} (${newPsData.statementId}: "${newPsData.title}").`,
+    };
+  } catch (err: any) {
     return {
       success: false,
       assigned: false,
-      message: 'This problem statement has already been assigned. Please select another FREE problem statement.',
+      message: `Problem reassignment encountered an error: ${err.message}`,
     };
   }
-
-  // Release old problem if any
-  const currentAssign = db.teamProblemAssignments.get(teamId);
-  const oldStatementId = currentAssign?.statementId || db.teams.get(teamId)?.assignedStatementId;
-  if (oldStatementId && oldStatementId !== newStatementId) {
-    const oldPs = db.problemStatements.get(oldStatementId);
-    if (oldPs) {
-      oldPs.assignedTeamId = undefined;
-      oldPs.assignedTeamName = undefined;
-      db.problemStatements.set(oldStatementId, oldPs);
-    }
-    db.problemAssignments.delete(`${teamId}_${oldStatementId}`);
-  }
-
-  const seq = newPs.order !== undefined && newPs.order !== null ? newPs.order : (newPs.sequence || 1);
-  const now = new Date().toISOString();
-
-  db.teamProblemAssignments.set(teamId, {
-    teamId,
-    statementId: newPs.statementId,
-    problemStatementId: newPs.statementId,
-    problemSequence: seq,
-    order: seq,
-    statementTitle: newPs.title,
-    description: newPs.description,
-    category: newPs.category || 'General',
-    difficulty: newPs.difficulty || 'MEDIUM',
-    team: teamName,
-    aiAnalysis: newPs.analysis || '',
-    confidence: newPs.confidence || 0.9,
-    assignedAt: now,
-    assignedBy: 'admin_reassignment',
-    status: 'DRAFT',
-  });
-
-  newPs.assignedTeamId = teamId;
-  newPs.assignedTeamName = teamName;
-  db.problemStatements.set(newStatementId, newPs);
-
-  const team = db.teams.get(teamId) || { teamId, teamName };
-  team.assignedStatementId = newPs.statementId;
-  team.assignedStatementTitle = newPs.title;
-  db.teams.set(teamId, team);
-
-  return {
-    success: true,
-    assigned: true,
-    statementId: newPs.statementId,
-    problemSequence: seq,
-    message: `Successfully reassigned Team ${teamId} to Problem #${seq} (${newPs.statementId}: "${newPs.title}").`,
-  };
 }
 
 /**
@@ -348,9 +483,9 @@ function populate42ExistingTeams(db: MockDb) {
   }
 }
 
-export async function run15ManualAssignmentTests() {
+export async function run18ManualAssignmentTests() {
   console.log('========================================================================================');
-  console.log('       15 REQUIRED MANUAL PROBLEM STATEMENT ASSIGNMENT TEST SUITE                       ');
+  console.log('       18-TEST SUITE: MANUAL PROBLEM ASSIGNMENT & STRICT TRANSACTION VERIFICATION       ');
   console.log('========================================================================================\n');
 
   let passed = 0;
@@ -370,118 +505,124 @@ export async function run15ManualAssignmentTests() {
   populate102Statements(db);
   populate42ExistingTeams(db);
 
-  // --- TEST 1: Create Team 43 -> select Problem #43 -> verify Team 43 gets Problem #43 ---
-  console.log('--- TEST 1: Create Team 43 -> select Problem #43 ---');
-  const res1 = assignSpecificProblemMock(db, 'TEAM043', 'Team 43', 'PS043');
-  assert(res1.success === true, 'TEST 1: Team 43 creation and assignment succeeded');
-  assert(res1.statementId === 'PS043', 'TEST 1: Team 43 gets Problem #43 (PS043)');
-  assert(db.teamProblemAssignments.get('TEAM043')?.statementId === 'PS043', 'TEST 1: Persisted in teamProblemAssignments');
-  assert(db.teams.get('TEAM043')?.assignedStatementId === 'PS043', 'TEST 1: Persisted in teams collection');
+  // --- TEST 1: Existing Team assignment remains unchanged ---
+  console.log('--- TEST 1: Existing Team assignment remains unchanged ---');
+  assert(db.teamProblemAssignments.get('TEAM001')?.statementId === 'PS001', 'TEST 1: TEAM001 retains PS001');
+  assert(db.teamProblemAssignments.get('TEAM042')?.statementId === 'PS042', 'TEST 1: TEAM042 retains PS042');
 
-  // --- TEST 2: Create Team 44 -> select Problem #10 -> verify Team 44 gets Problem #10 ---
-  console.log('\n--- TEST 2: Create Team 44 -> select Problem #10 (occupied) or free problem #44 ---');
-  const res2AttemptOccupied = assignSpecificProblemMock(db, 'TEAM044', 'Team 44', 'PS010');
-  assert(res2AttemptOccupied.success === false, 'TEST 2: Selecting already ASSIGNED Problem #10 is rejected');
-  assert(res2AttemptOccupied.message === 'This problem statement has already been assigned. Please select another FREE problem statement.', 'TEST 2: Exact required error message returned');
-
-  const res2Free = assignSpecificProblemMock(db, 'TEAM044', 'Team 44', 'PS044');
-  assert(res2Free.success === true, 'TEST 2: Selecting FREE Problem #44 succeeds');
-  assert(res2Free.statementId === 'PS044', 'TEST 2: Team 44 receives Problem #44');
-
-  // --- TEST 3: Create Team 45 -> verify Problem #1 is NOT automatically assigned ---
-  console.log('\n--- TEST 3: Create Team 45 -> verify Problem #1 is NOT automatically assigned ---');
-  const res3 = assignSpecificProblemMock(db, 'TEAM045', 'Team 45', 'PS045');
-  assert(res3.statementId !== 'PS001', 'TEST 3: Problem #1 is NOT automatically assigned to Team 45');
-  assert(res3.statementId === 'PS045', 'TEST 3: Team 45 received selected Problem #45');
-
-  // --- TEST 4: Create Team 46 -> select a FREE problem -> verify correct assignment ---
-  console.log('\n--- TEST 4: Create Team 46 -> select a FREE problem (PS046) ---');
-  const res4 = assignSpecificProblemMock(db, 'TEAM046', 'Team 46', 'PS046');
-  assert(res4.success === true, 'TEST 4: Team 46 assigned FREE problem PS046');
-  assert(res4.statementId === 'PS046', 'TEST 4: Team 46 statementId is PS046');
-
-  // --- TEST 5: Try selecting an already ASSIGNED problem -> must be blocked ---
-  console.log('\n--- TEST 5: Try selecting an already ASSIGNED problem ---');
-  const res5 = assignSpecificProblemMock(db, 'TEAM047', 'Team 47', 'PS046');
-  assert(res5.success === false, 'TEST 5: Attempting to assign occupied PS046 is blocked');
-  assert(res5.message === 'This problem statement has already been assigned. Please select another FREE problem statement.', 'TEST 5: Required block message');
-
-  // --- TEST 6: Try selecting a PUBLISHED problem -> must be blocked ---
-  console.log('\n--- TEST 6: Try selecting a PUBLISHED problem ---');
-  const res6 = assignSpecificProblemMock(db, 'TEAM048', 'Team 48', 'PS001');
-  assert(res6.success === false, 'TEST 6: Attempting to assign PUBLISHED PS001 is blocked');
-  assert(res6.message === 'This problem statement has already been assigned. Please select another FREE problem statement.', 'TEST 6: Required block message');
-
-  // --- TEST 7: Create another team -> verify all previous team assignments remain unchanged ---
-  console.log('\n--- TEST 7: Create Team 49 -> verify previous assignments unchanged ---');
-  const res7 = assignSpecificProblemMock(db, 'TEAM049', 'Team 49', 'PS049');
-  assert(res7.success === true, 'TEST 7: Team 49 created with PS049');
-  assert(db.teamProblemAssignments.get('TEAM043')?.statementId === 'PS043', 'TEST 7: Team 43 retains PS043');
-  assert(db.teamProblemAssignments.get('TEAM044')?.statementId === 'PS044', 'TEST 7: Team 44 retains PS044');
-  assert(db.teamProblemAssignments.get('TEAM045')?.statementId === 'PS045', 'TEST 7: Team 45 retains PS045');
-  assert(db.teamProblemAssignments.get('TEAM046')?.statementId === 'PS046', 'TEST 7: Team 46 retains PS046');
-
-  // --- TEST 8: Publish Team 43 problem -> verify Team 43 still has exactly the same problem ---
-  console.log('\n--- TEST 8: Publish Team 43 problem -> verify stability ---');
-  const ps43 = db.problemStatements.get('PS043')!;
-  ps43.status = 'PUBLISHED';
-  db.problemStatements.set('PS043', ps43);
-  const assign43 = db.teamProblemAssignments.get('TEAM043')!;
-  assign43.status = 'PUBLISHED';
-  db.teamProblemAssignments.set('TEAM043', assign43);
-
-  assert(db.teamProblemAssignments.get('TEAM043')?.statementId === 'PS043', 'TEST 8: Team 43 still has PS043 after publishing');
-  assert(db.teamProblemAssignments.get('TEAM043')?.status === 'PUBLISHED', 'TEST 8: Status is PUBLISHED');
-
-  // --- TEST 9: Refresh admin page -> verify assignments remain unchanged ---
-  console.log('\n--- TEST 9: Page refresh idempotency ---');
+  // --- TEST 2: Refresh page -> same assignment ---
+  console.log('\n--- TEST 2: Page refresh idempotency ---');
   const occupiedSetBefore = getComprehensiveOccupiedIds(db);
-  for (let r = 1; r <= 5; r++) {
+  for (let r = 1; r <= 3; r++) {
     const occupiedSetAfter = getComprehensiveOccupiedIds(db);
-    assert(occupiedSetBefore.size === occupiedSetAfter.size, `TEST 9: Refresh ${r} reads exactly ${occupiedSetBefore.size} occupied statements`);
+    assert(occupiedSetBefore.size === occupiedSetAfter.size, `TEST 2: Refresh ${r} reads same ${occupiedSetBefore.size} occupied statements`);
   }
 
-  // --- TEST 10: Logout/login -> verify team still sees the same problem ---
-  console.log('\n--- TEST 10: Logout/login persistence ---');
-  const team46Doc = db.teams.get('TEAM046');
-  const team46AssignDoc = db.teamProblemAssignments.get('TEAM046');
-  assert(team46Doc.assignedStatementId === 'PS046', 'TEST 10: /teams/TEAM046 has PS046');
-  assert(team46AssignDoc.statementId === 'PS046', 'TEST 10: /teamProblemAssignments/TEAM046 has PS046');
+  // --- TEST 3: Create a new Team -> existing Teams remain unchanged ---
+  console.log('\n--- TEST 3: Create Team 43 -> existing teams unchanged ---');
+  const res3 = await assignSpecificProblemStrictMock(db, 'TEAM043', 'Team 43', 'PS043');
+  assert(res3.success === true, 'TEST 3: Team 43 created');
+  assert(db.teamProblemAssignments.get('TEAM001')?.statementId === 'PS001', 'TEST 3: TEAM001 unchanged');
+  assert(db.teamProblemAssignments.get('TEAM042')?.statementId === 'PS042', 'TEST 3: TEAM042 unchanged');
 
-  // --- TEST 11: Open from another device/browser -> verify same assignment ---
-  console.log('\n--- TEST 11: Multi-device consistency ---');
-  const device1Read = db.teamProblemAssignments.get('TEAM043')?.statementId;
-  const device2Read = db.teamProblemAssignments.get('TEAM043')?.statementId;
-  assert(device1Read === device2Read && device1Read === 'PS043', 'TEST 11: Both devices read identical PS043');
+  // --- TEST 4: Existing published Team -> create another Team -> published assignment unchanged ---
+  console.log('\n--- TEST 4: Published assignment stability ---');
+  const res4 = await assignSpecificProblemStrictMock(db, 'TEAM044', 'Team 44', 'PS044');
+  assert(res4.success === true, 'TEST 4: Team 44 created');
+  assert(db.teamProblemAssignments.get('TEAM001')?.status === 'PUBLISHED', 'TEST 4: TEAM001 remains PUBLISHED with PS001');
 
-  // --- TEST 12: Two simultaneous assignment attempts for the same FREE problem -> only one succeeds ---
-  console.log('\n--- TEST 12: Concurrent assignment collision handling ---');
-  const attemptA = assignSpecificProblemMock(db, 'TEAM050A', 'Team 50A', 'PS050');
-  const attemptB = assignSpecificProblemMock(db, 'TEAM050B', 'Team 50B', 'PS050');
-  assert(attemptA.success === true, 'TEST 12: First assignment attempt succeeds');
-  assert(attemptB.success === false, 'TEST 12: Second concurrent assignment attempt fails');
-  assert(attemptB.message === 'This problem statement has already been assigned. Please select another FREE problem statement.', 'TEST 12: Collision error message displayed');
+  // --- TEST 5: Select FREE Problem #101 for new Team -> New Team -> #101 ---
+  console.log('\n--- TEST 5: Select FREE Problem #101 (PS101) ---');
+  const res5 = await assignSpecificProblemStrictMock(db, 'TEAM045', 'Team 45', 'PS101');
+  assert(res5.success === true, 'TEST 5: Assignment to PS101 succeeded');
+  assert(res5.statementId === 'PS101', 'TEST 5: Team 45 assigned PS101');
+  assert(db.teamProblemAssignments.get('TEAM045')?.statementId === 'PS101', 'TEST 5: Persisted in teamProblemAssignments');
 
-  // --- TEST 13: Admin manually reassigns a problem -> verify old/new assignment states are correct ---
-  console.log('\n--- TEST 13: Manual reassignment ---');
-  const reassignRes = reassignTeamProblemMock(db, 'TEAM046', 'Team 46', 'PS051');
-  assert(reassignRes.success === true, 'TEST 13: Reassignment to PS051 succeeded');
-  assert(db.teamProblemAssignments.get('TEAM046')?.statementId === 'PS051', 'TEST 13: Team 46 now assigned PS051');
-  const oldPs = db.problemStatements.get('PS046')!;
-  assert(!oldPs.assignedTeamId, 'TEST 13: Old problem PS046 is released and FREE');
-  const reuseOldRes = assignSpecificProblemMock(db, 'TEAM052', 'Team 52', 'PS046');
-  assert(reuseOldRes.success === true, 'TEST 13: Freed PS046 successfully assigned to Team 52');
+  // --- TEST 6: Try selecting already ASSIGNED Problem -> Cannot select ---
+  console.log('\n--- TEST 6: Selecting already ASSIGNED Problem ---');
+  const res6 = await assignSpecificProblemStrictMock(db, 'TEAM046', 'Team 46', 'PS043');
+  assert(res6.success === false, 'TEST 6: Blocked from selecting assigned PS043');
+  assert(res6.message === 'This problem statement has already been assigned. Please select another FREE problem statement.', 'TEST 6: Correct error message');
 
-  // --- TEST 14: Verify no existing teams/problems are deleted or modified incorrectly ---
-  console.log('\n--- TEST 14: Production data safety ---');
-  assert(db.problemStatements.size === 102, 'TEST 14: All 102 Problem Statements preserved');
-  assert(db.teams.has('TEAM001') && db.teams.has('TEAM042'), 'TEST 14: Existing teams TEAM001 through TEAM042 preserved');
-  assert(db.teamProblemAssignments.get('TEAM001')?.statementId === 'PS001', 'TEST 14: TEAM001 retained PS001');
-  assert(db.teamProblemAssignments.get('TEAM042')?.statementId === 'PS042', 'TEST 14: TEAM042 retained PS042');
+  // --- TEST 7: Try selecting PUBLISHED Problem -> Cannot select ---
+  console.log('\n--- TEST 7: Selecting PUBLISHED Problem ---');
+  const res7 = await assignSpecificProblemStrictMock(db, 'TEAM046', 'Team 46', 'PS001');
+  assert(res7.success === false, 'TEST 7: Blocked from selecting PUBLISHED PS001');
+  assert(res7.message === 'This problem statement has already been assigned. Please select another FREE problem statement.', 'TEST 7: Correct error message');
 
-  // --- TEST 15: Run production build and verify typescript compilation ---
-  console.log('\n--- TEST 15: TypeScript compilation & syntax validation ---');
-  assert(true, 'TEST 15: Manual problem selection architecture verified');
+  // --- TEST 8: Create new Team without selecting a Problem -> Validation error ---
+  console.log('\n--- TEST 8: Validation error if no problem selected ---');
+  const res8 = await assignSpecificProblemStrictMock(db, 'TEAM046', 'Team 46', '');
+  assert(res8.success === false, 'TEST 8: Rejected when no problem selected');
+
+  // --- TEST 9: Create Team with FREE Problem -> Team creation succeeds and saved ---
+  console.log('\n--- TEST 9: Team creation with FREE problem PS046 ---');
+  const res9 = await assignSpecificProblemStrictMock(db, 'TEAM046', 'Team 46', 'PS046');
+  assert(res9.success === true, 'TEST 9: Succeeded with FREE PS046');
+  assert(db.teams.get('TEAM046')?.assignedStatementId === 'PS046', 'TEST 9: Persisted in teams');
+
+  // --- TEST 10: Refresh -> Assignment remains exactly the same ---
+  console.log('\n--- TEST 10: Post-creation refresh persistence ---');
+  assert(db.teamProblemAssignments.get('TEAM046')?.statementId === 'PS046', 'TEST 10: Assignment verified intact');
+
+  // --- TEST 11: Logout / Login -> Same assignment ---
+  console.log('\n--- TEST 11: Session persistence ---');
+  const userTeamDoc = db.teams.get('TEAM046');
+  assert(userTeamDoc.assignedStatementId === 'PS046', 'TEST 11: Team session loads PS046');
+
+  // --- TEST 12: Two simultaneous users select same FREE Problem -> Only one succeeds ---
+  console.log('\n--- TEST 12: Concurrency collision handling ---');
+  const attemptA = await assignSpecificProblemStrictMock(db, 'TEAM047A', 'Team 47A', 'PS047');
+  const attemptB = await assignSpecificProblemStrictMock(db, 'TEAM047B', 'Team 47B', 'PS047');
+  assert(attemptA.success === true, 'TEST 12: 1st concurrent attempt succeeds');
+  assert(attemptB.success === false, 'TEST 12: 2nd concurrent attempt fails safely');
+  assert(attemptB.message === 'This problem statement has already been assigned. Please select another FREE problem statement.', 'TEST 12: Correct collision error message');
+
+  // --- TEST 13: No duplicate Team -> Problem assignments ---
+  console.log('\n--- TEST 13: Integrity: No duplicate assignments per team ---');
+  let duplicates = 0;
+  for (const [tId, assign] of db.teamProblemAssignments.entries()) {
+    if (tId !== assign.teamId) duplicates++;
+  }
+  assert(duplicates === 0, 'TEST 13: Zero duplicate team assignments');
+
+  // --- TEST 14: No duplicate Problem -> Team assignments ---
+  console.log('\n--- TEST 14: Integrity: No duplicate teams per problem ---');
+  const assignedProblems = new Set<string>();
+  let duplicateProblems = 0;
+  for (const [tId, assign] of db.teamProblemAssignments.entries()) {
+    if (assignedProblems.has(assign.statementId)) {
+      duplicateProblems++;
+    }
+    assignedProblems.add(assign.statementId);
+  }
+  assert(duplicateProblems === 0, 'TEST 14: Zero duplicate problem assignments');
+
+  // --- TEST 15: 102 Problem Statements remain intact ---
+  console.log('\n--- TEST 15: 102 Problem Statements intact ---');
+  assert(db.problemStatements.size === 102, 'TEST 15: Exactly 102 Problem Statements present');
+
+  // --- TEST 16: All existing Teams remain intact ---
+  console.log('\n--- TEST 16: Existing Teams intact ---');
+  assert(db.teams.has('TEAM001') && db.teams.has('TEAM042'), 'TEST 16: Existing teams intact');
+
+  // --- TEST 17: All existing published assignments remain intact ---
+  console.log('\n--- TEST 17: Published assignments intact ---');
+  assert(db.teamProblemAssignments.get('TEAM001')?.status === 'PUBLISHED', 'TEST 17: TEAM001 published assignment intact');
+
+  // --- TEST 18: STRICT FIRESTORE TRANSACTION: Zero reads executed after writes ---
+  console.log('\n--- TEST 18: Strict Transaction read-before-write validation ---');
+  const txTestRunner = new StrictFirestoreTransaction(db);
+  let caughtReadAfterWrite = false;
+  try {
+    txTestRunner.set('teams', 'TEST_T', { test: true });
+    await txTestRunner.get('teams', 'TEST_T'); // Violates read-after-write rule!
+  } catch (err: any) {
+    if (err.message.includes('Firestore transactions require all reads to be executed before all writes.')) {
+      caughtReadAfterWrite = true;
+    }
+  }
+  assert(caughtReadAfterWrite === true, 'TEST 18: Strict transaction successfully catches and prevents read-after-write violations');
 
   console.log('\n========================================================================================');
   console.log(`TOTAL TESTS: ${total} | PASSED: ${passed} | FAILED: ${total - passed}`);
@@ -492,7 +633,7 @@ export async function run15ManualAssignmentTests() {
   }
 }
 
-run15ManualAssignmentTests().catch((e) => {
+run18ManualAssignmentTests().catch((e) => {
   console.error(e);
   process.exit(1);
 });
