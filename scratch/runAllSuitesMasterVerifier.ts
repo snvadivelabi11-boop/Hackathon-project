@@ -29,9 +29,10 @@ const suites: { name: string; command: string }[] = [
   { name: '14. Reset Hackathon System (20 Tests)', command: 'npx tsx scratch/runResetHackathonTests.ts' },
   { name: '15. Final Master QA Suite (17 Tests)', command: 'npx tsx scratch/runFinalMasterQASuite.ts' },
   { name: '16. Final Master System E2E (30 Tests)', command: 'npx tsx scratch/runMasterE2ETests.ts' },
-  { name: '17. Sequential Problem Assignment Suite (27 Tests)', command: 'npx tsx scratch/testSequentialProblemAssignment.ts' },
-  { name: '18. Cloud Functions Backend Build', command: 'npm --prefix functions run build' },
-  { name: '19. Frontend Production Build', command: 'npm run build' },
+  { name: '17. Sequential Problem Assignment Suite (51 Tests)', command: 'npx tsx scratch/testSequentialProblemAssignment.ts' },
+  { name: '18. 12 Required Assignment Cases Suite (44 Tests)', command: 'npx tsx scratch/testRequired12AssignmentCases.ts' },
+  { name: '19. Cloud Functions Backend Build', command: 'npm --prefix functions run build' },
+  { name: '20. Frontend Production Build', command: 'npm run build' },
 ];
 
 async function runAll() {

@@ -1036,14 +1036,28 @@ export async function assignNextSequentialProblemToTeam(
         return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
       });
 
-      // Find the first unassigned problem statement using occupiedSet
-      const nextProblem = allStatements.find((st) => !isStatementOccupied(st, occupiedSet, teamId));
+      // Find the first unassigned problem statement using occupiedSet and transaction.get
+      let nextProblem: ProblemStatement | null = null;
+      for (const cand of allStatements) {
+        if (isStatementOccupied(cand, occupiedSet, teamId)) {
+          continue;
+        }
+        const candRef = doc(db, 'problemStatements', cand.statementId);
+        const candSnap = await transaction.get(candRef);
+        if (!candSnap.exists()) continue;
+        const candData = candSnap.data() as ProblemStatement;
+        if (isStatementOccupied(candData, occupiedSet, teamId)) {
+          continue;
+        }
+        nextProblem = { ...cand, ...candData, statementId: cand.statementId };
+        break;
+      }
 
       if (!nextProblem) {
         return {
           success: true,
           assigned: false,
-          message: 'All available problem statements are currently assigned. Team created without default problem.',
+          message: 'No unassigned Problem Statements are available for this Team.',
         };
       }
 
