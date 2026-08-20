@@ -1022,16 +1022,16 @@ export const ProblemStatementsPage: React.FC = () => {
                   >
                     <div>
                       <Tag color="purple" style={{ fontSize: '13px', fontWeight: 800, padding: '4px 10px' }}>
-                        PREVIEW — NOT YET PUBLISHED
+                        ASSIGNMENT PREVIEW
                       </Tag>
                       <Text type="secondary" style={{ marginLeft: 8, fontSize: '13px' }}>
-                        Calculated from real active teams ({teams.filter((t) => t.status !== 'disabled').length} teams across {statements.length} problem statements)
+                        Persisted assignments ({teams.filter((t) => t.status !== 'disabled').length} teams registered, {statements.length} problem statements)
                       </Text>
                     </div>
 
                     <Space>
                       <Button icon={<ReloadOutlined />} onClick={handleRegeneratePreview}>
-                        Regenerate Preview
+                        Refresh Preview
                       </Button>
                       <Button
                         type="primary"
@@ -1046,7 +1046,7 @@ export const ProblemStatementsPage: React.FC = () => {
 
                   {currentAssignmentMapping.length === 0 ? (
                     <div style={{ textAlign: 'center', padding: '40px 0', color: '#94a3b8' }}>
-                      No problem statements available to generate assignment preview.
+                      No problem statements available to display assignment preview.
                     </div>
                   ) : (
                     <List
@@ -1085,17 +1085,19 @@ export const ProblemStatementsPage: React.FC = () => {
 
                             <div>
                               <Text strong style={{ fontSize: '12px', color: '#475569' }}>
-                                Suggested Teams ({pItem.assignedTeamIds.length}):
+                                Assigned Team:
                               </Text>
                               <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                                 {pItem.assignedTeamIds.length > 0 ? (
                                   pItem.assignedTeamIds.map((tid) => (
-                                    <Tag key={tid} color="purple" style={{ fontWeight: 700 }}>
-                                      {tid}
+                                    <Tag key={tid} color="purple" style={{ fontWeight: 700, fontSize: '12px' }}>
+                                      ASSIGNED — {tid}
                                     </Tag>
                                   ))
                                 ) : (
-                                  <Text type="secondary" style={{ fontSize: '12px' }}>No teams assigned</Text>
+                                  <Tag color="green" style={{ fontWeight: 700 }}>
+                                    FREE
+                                  </Tag>
                                 )}
                               </div>
                             </div>

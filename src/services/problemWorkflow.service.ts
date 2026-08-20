@@ -121,98 +121,96 @@ export async function saveAllProblemStatementsAsDraft(
 }
 
 /**
- * Calculates dynamic preview assignment mapping based on REAL database teams and problem statements.
- * Supports Balanced Distribution (60 teams / 15 problems = 4 each), Sequential, Fixed Groups, and Round-Robin.
+ * Resolves the actual persisted Firestore team-to-problem assignments for preview.
+ * READ-ONLY: Derives mapping strictly from saved relationships in Firestore.
+ * Does NOT recalculate, distribute, shuffle, or invent assignments.
  */
 export function calculateDynamicAssignmentMapping(
   statements: ProblemStatement[],
   teams: Team[],
-  config: ProblemAssignmentConfig
+  _config?: ProblemAssignmentConfig
 ): ProblemAssignmentPreviewItem[] {
   if (statements.length === 0) return [];
 
-  // Filter only active teams
-  const activeTeams = teams.filter((t) => t.status !== 'disabled');
-  const totalTeams = activeTeams.length;
-  const totalProblems = statements.length;
-
-  const sortedStatements = [...statements].sort(
-    (a, b) => (a.sequence || a.order || 0) - (b.sequence || b.order || 0)
-  );
+  // Sort statements deterministically by permanent order / sequence
+  const sortedStatements = [...statements].sort((a, b) => {
+    const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence || 0);
+    const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence || 0);
+    if (ordA !== ordB) return ordA - ordB;
+    return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
+  });
 
   const teamMap = new Map<string, Team>();
-  teams.forEach((t) => teamMap.set(t.teamId.toUpperCase(), t));
+  teams.forEach((t) => {
+    if (t.teamId) {
+      teamMap.set(t.teamId.toUpperCase(), t);
+    }
+  });
 
-  const result: ProblemAssignmentPreviewItem[] = sortedStatements.map((st, idx) => ({
-    statementId: st.statementId,
-    sequence: st.sequence || st.order || idx + 1,
-    title: st.title,
-    description: st.description,
-    requirements: Array.isArray(st.requirements)
-      ? st.requirements
-      : st.requirements
-        ? [st.requirements]
-        : [],
-    technicalGuidelines: st.technicalGuidelines,
-    constraints: st.constraints,
-    expectedOutcome: st.expectedOutcome,
-    assignedTeamIds: [],
-    assignedTeams: [],
-  }));
+  return sortedStatements.map((st, idx) => {
+    const seq = st.order !== undefined && st.order !== null ? st.order : (st.sequence || idx + 1);
+    const assignedSet = new Set<string>();
 
-  if (totalTeams === 0) return result;
-
-  const mode = config.assignmentMode || 'batch_alternating';
-
-  if (mode === 'sequential') {
-    // 1-to-1 sequential mapping
-    activeTeams.forEach((t, i) => {
-      const pIdx = i % totalProblems;
-      result[pIdx].assignedTeamIds.push(t.teamId);
-      result[pIdx].assignedTeams.push({
-        teamId: t.teamId,
-        teamName: t.teamName,
-        leaderName: t.leaderName,
-        status: t.status,
+    // 1. Check direct problem statement fields
+    if (st.assignedTeamId && st.assignedTeamId.trim().length > 0) {
+      assignedSet.add(st.assignedTeamId.trim());
+    }
+    if (Array.isArray(st.assignedTeamIds)) {
+      st.assignedTeamIds.forEach((tid) => {
+        if (tid && tid.trim()) assignedSet.add(tid.trim());
       });
-    });
-  } else if (mode === 'round_robin') {
-    // Round robin distribution
-    activeTeams.forEach((t, i) => {
-      const pIdx = i % totalProblems;
-      result[pIdx].assignedTeamIds.push(t.teamId);
-      result[pIdx].assignedTeams.push({
-        teamId: t.teamId,
-        teamName: t.teamName,
-        leaderName: t.leaderName,
-        status: t.status,
-      });
-    });
-  } else {
-    // Balanced Distribution (Default: 60 teams / 15 problems = 4 teams per problem)
-    const basePerProblem = Math.floor(totalTeams / totalProblems);
-    const remainder = totalTeams % totalProblems;
+    }
+    if (st.team && st.team.trim().length > 0 && !st.team.startsWith('PS') && st.team.toUpperCase().startsWith('TEAM')) {
+      assignedSet.add(st.team.trim());
+    }
 
-    let teamCursor = 0;
-    result.forEach((pItem, pIdx) => {
-      // Allocate base + 1 to first 'remainder' problems
-      const countForThisProblem = pIdx < remainder ? basePerProblem + 1 : basePerProblem;
+    // 2. Cross-reference actual teams in Firestore
+    teams.forEach((t) => {
+      if (!t.teamId) return;
+      const matchesStatementId =
+        t.assignedStatementId === st.statementId ||
+        t.problemStatementId === st.statementId ||
+        t.assignedProblemId === st.statementId ||
+        t.assignedProblemCode === st.statementId ||
+        t.problemStatementCode === st.statementId;
 
-      for (let k = 0; k < countForThisProblem && teamCursor < activeTeams.length; k++) {
-        const team = activeTeams[teamCursor];
-        pItem.assignedTeamIds.push(team.teamId);
-        pItem.assignedTeams.push({
-          teamId: team.teamId,
-          teamName: team.teamName,
-          leaderName: team.leaderName,
-          status: team.status,
-        });
-        teamCursor++;
+      const matchesOrder =
+        (t.assignedProblemOrder !== undefined && t.assignedProblemOrder !== null && t.assignedProblemOrder === seq) ||
+        (t.problemStatementOrder !== undefined && t.problemStatementOrder !== null && t.problemStatementOrder === seq);
+
+      if (matchesStatementId || matchesOrder) {
+        assignedSet.add(t.teamId.trim());
       }
     });
-  }
 
-  return result;
+    const assignedTeamIds = Array.from(assignedSet);
+    const assignedTeams = assignedTeamIds.map((tid) => {
+      const teamObj = teamMap.get(tid.toUpperCase());
+      return {
+        teamId: tid,
+        teamName: teamObj?.teamName || tid,
+        leaderName: teamObj?.leaderName || '',
+        status: teamObj?.status || 'active',
+      };
+    });
+
+    return {
+      statementId: st.statementId,
+      sequence: seq,
+      title: st.title,
+      description: st.description,
+      requirements: Array.isArray(st.requirements)
+        ? st.requirements
+        : st.requirements
+          ? [st.requirements]
+          : [],
+      technicalGuidelines: st.technicalGuidelines,
+      constraints: st.constraints,
+      expectedOutcome: st.expectedOutcome,
+      assignedTeamIds,
+      assignedTeams,
+    };
+  });
 }
 
 /**
