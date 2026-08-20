@@ -237,10 +237,6 @@ async function calculateNextSequentialTeamId(): Promise<{ nextNum: number; teamI
   }
 }
 
-/**
- * Previews the next sequential Team ID and generated username for the Admin UI.
- * Also retrieves the next available Problem Statement in sequential order.
- */
 export async function getNextTeamPreview(leaderName?: string): Promise<NextTeamPreview> {
   const { nextNum, teamId } = await calculateNextSequentialTeamId();
   const baseUsername = leaderName ? generateLocalUsername(leaderName) : '';
@@ -254,25 +250,10 @@ export async function getNextTeamPreview(leaderName?: string): Promise<NextTeamP
     }
   }
 
-  let defaultProblemStatement: NextTeamPreview['defaultProblemStatement'] = null;
-  try {
-    const { nextProblem } = await getNextAvailableProblemStatement();
-    if (nextProblem) {
-      defaultProblemStatement = {
-        statementId: nextProblem.statementId,
-        sequence: nextProblem.order ?? nextProblem.sequence ?? 1,
-        title: nextProblem.title,
-      };
-    }
-  } catch (e) {
-    console.warn('[AccountsService] Could not fetch next available problem statement preview:', e);
-  }
-
   return {
     nextTeamNumber: nextNum,
     generatedTeamId: teamId,
     generatedUsername: generatedUsername || (leaderName ? generateLocalUsername(leaderName) : ''),
-    defaultProblemStatement,
   };
 }
 
@@ -410,37 +391,6 @@ export async function createTeamAccount(input: CreateAccountInput): Promise<Crea
       metadata: { teamName, leaderName, username, teamId, selectedStatementId },
     }).catch(() => {});
 
-    // Automatic first-available problem assignment (or specific assignment if selected by Admin)
-    let assignedStatementId: string | null = null;
-    let assignedStatementTitle: string | null = null;
-    let assignedProblemSequence: number | null = null;
-
-    if (selectedStatementId) {
-      const assignResult = await assignSpecificProblemToTeam(teamId, teamName, selectedStatementId, {
-        uid: auth.currentUser?.uid,
-        email: auth.currentUser?.email,
-      });
-      if (assignResult.success && assignResult.assigned) {
-        assignedStatementId = assignResult.statementId || null;
-        assignedStatementTitle = assignResult.statementTitle || null;
-        assignedProblemSequence = assignResult.problemSequence || null;
-      } else if (!assignResult.success) {
-        throw new Error(assignResult.message || 'This problem statement has already been assigned. Please select another FREE problem statement.');
-      }
-    } else {
-      const assignResult = await assignNextSequentialProblemToTeam(teamId, teamName, {
-        uid: auth.currentUser?.uid,
-        email: auth.currentUser?.email,
-      });
-      if (assignResult.success && assignResult.assigned) {
-        assignedStatementId = assignResult.statementId || null;
-        assignedStatementTitle = assignResult.statementTitle || null;
-        assignedProblemSequence = assignResult.problemSequence || null;
-      } else if (!assignResult.success) {
-        throw new Error(assignResult.message || 'No available Problem Statements. Please add another Problem Statement before creating a new Team.');
-      }
-    }
-
     return {
       success: true,
       teamId,
@@ -448,10 +398,10 @@ export async function createTeamAccount(input: CreateAccountInput): Promise<Crea
       teamName,
       leaderName,
       authUid,
-      assignedStatementId,
-      assignedStatementTitle,
-      assignedProblemSequence,
-      message: `Team account created successfully for ${teamName} (${teamId})${assignedStatementId ? ` with assigned problem ${assignedStatementId}` : ''}.`,
+      assignedStatementId: null,
+      assignedStatementTitle: null,
+      assignedProblemSequence: null,
+      message: `Team account created successfully for ${teamName} (${teamId}).`,
     };
   } catch (err: any) {
     throw new Error(formatTeamCreationError(err));

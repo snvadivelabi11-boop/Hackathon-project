@@ -25,8 +25,6 @@ import {
   generateLocalUsername,
   formatTeamCreationError,
 } from '../../services/accounts.service';
-import { subscribeToProblemStatements } from '../../services/problems.service';
-import { ProblemStatement } from '../../types';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -42,16 +40,12 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [previewTeamId, setPreviewTeamId] = useState<string>('TEAM001');
   const [previewUsername, setPreviewUsername] = useState<string>('');
-  const [statements, setStatements] = useState<ProblemStatement[]>([]);
 
   const [createdSuccessData, setCreatedSuccessData] = useState<{
     teamId: string;
     username: string;
     teamName: string;
     leaderName: string;
-    assignedStatementId?: string | null;
-    assignedStatementTitle?: string | null;
-    assignedProblemSequence?: number | null;
   } | null>(null);
 
   useEffect(() => {
@@ -60,11 +54,6 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
       setCreatedSuccessData(null);
       form.resetFields();
       fetchPreview();
-
-      const unsub = subscribeToProblemStatements((list) => {
-        setStatements(list);
-      });
-      return () => unsub();
     }
   }, [open]);
 
@@ -96,7 +85,6 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
     setErrorMessage(null);
 
     try {
-      // Create team account - automatic assignment will be handled by the existing backend/service
       const res = await createTeamAccount({
         teamName: values.teamName.trim(),
         leaderName: values.leaderName.trim(),
@@ -108,9 +96,6 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
         username: res.username,
         teamName: res.teamName,
         leaderName: res.leaderName,
-        assignedStatementId: res.assignedStatementId,
-        assignedStatementTitle: res.assignedStatementTitle,
-        assignedProblemSequence: res.assignedProblemSequence,
       });
 
       message.success(`Team ${res.teamId} created successfully!`);
@@ -190,19 +175,13 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
                 {createdSuccessData.username}
               </Text>
             </div>
-            {createdSuccessData.assignedStatementId && (
-              <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text type="secondary">Assigned Problem:</Text>
-                <Tag color="green" style={{ fontWeight: 800, fontSize: '13px', margin: 0 }}>
-                  {createdSuccessData.assignedProblemSequence
-                    ? `Problem #${createdSuccessData.assignedProblemSequence} (${createdSuccessData.assignedStatementId})`
-                    : createdSuccessData.assignedStatementId}
-                </Tag>
-              </div>
-            )}
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between' }}>
               <Text type="secondary">Team Name:</Text>
               <Text strong>{createdSuccessData.teamName}</Text>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <Text type="secondary">Team Leader:</Text>
+              <Text strong>{createdSuccessData.leaderName}</Text>
             </div>
           </div>
 
@@ -280,56 +259,6 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
                 </div>
               </Col>
             </Row>
-
-            {(() => {
-              const sortedStatements = [...statements].sort((a, b) => {
-                const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence || 0);
-                const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence || 0);
-                if (ordA !== ordB) return ordA - ordB;
-                return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
-              });
-
-              const firstAvailableProblem = sortedStatements.find((st) => {
-                const hasAssigned =
-                  (st.assignedTeamId && st.assignedTeamId.trim().length > 0) ||
-                  (st.team && st.team.trim().length > 0 && !st.team.startsWith('PS') && st.team.toUpperCase().startsWith('TEAM')) ||
-                  (Array.isArray(st.assignedTeamIds) && st.assignedTeamIds.length > 0) ||
-                  (Array.isArray((st as any).assignedTeams) && (st as any).assignedTeams.length > 0);
-                return !hasAssigned;
-              });
-
-              return (
-                <div style={{ background: '#f8fafc', padding: '12px 14px', borderRadius: 8, border: '1px solid #e2e8f0', marginBottom: 16 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                    <Text type="secondary" style={{ fontSize: '11px', textTransform: 'uppercase', fontWeight: 600 }}>
-                      Default Problem Statement (Auto Sequential)
-                    </Text>
-                    <Tag color="purple" style={{ fontWeight: 800, fontSize: '10px', margin: 0 }}>
-                      AUTO ASSIGNED
-                    </Tag>
-                  </div>
-                  {firstAvailableProblem ? (
-                    <div>
-                      <Space style={{ marginBottom: 4 }}>
-                        <Tag color="blue" style={{ fontWeight: 800, fontSize: '12px' }}>
-                          #{firstAvailableProblem.order ?? firstAvailableProblem.sequence ?? 1}
-                        </Tag>
-                        <Text strong style={{ fontSize: '13px', color: '#1e293b' }}>
-                          {firstAvailableProblem.statementId}
-                        </Text>
-                      </Space>
-                      <div style={{ fontSize: '12px', color: '#475569', fontWeight: 500 }}>
-                        {firstAvailableProblem.title}
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600 }}>
-                      No available Problem Statements. Please add another Problem Statement before creating a new Team.
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
 
             <Form.Item
               name="password"
