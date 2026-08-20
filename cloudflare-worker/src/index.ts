@@ -256,76 +256,91 @@ function generateFallbackResults(items: CsvProblemInputItem[]): AnalyzedProblemO
  * Calls OpenRouter AI with exponential backoff retries
  */
 async function callOpenRouter(prompt: string, apiKey: string, model: string): Promise<string> {
-  const maxRetries = 2;
+  const modelsToTry = [
+    model,
+    'anthropic/claude-3.7-sonnet',
+    'anthropic/claude-3.5-sonnet:beta',
+    'anthropic/claude-3-5-sonnet',
+    'anthropic/claude-3-haiku',
+  ].filter((m, i, arr) => arr.indexOf(m) === i);
+
   let lastError: Error | null = null;
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 45000);
+  for (const currentModel of modelsToTry) {
+    const maxRetries = 1;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 45000);
 
-      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'HTTP-Referer': 'https://hackathon-portal.local',
-          'X-Title': 'Hackathon Management Portal (Cloudflare Worker)',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            {
-              role: 'system',
-              content: 'You are an expert technical problem statement dataset analyzer. Output strict valid JSON arrays matching the requested schema without markdown fences or conversational text.',
-            },
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
-          temperature: 0.1,
-          max_tokens: 4000,
-          response_format: { type: 'json_object' },
-        }),
-        signal: controller.signal,
-      });
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'HTTP-Referer': 'https://hackathon-portal.local',
+            'X-Title': 'Hackathon Management Portal (Cloudflare Worker)',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: currentModel,
+            messages: [
+              {
+                role: 'system',
+                content: 'You are an expert technical problem statement dataset analyzer. Output strict valid JSON arrays matching the requested schema without markdown fences or conversational text.',
+              },
+              {
+                role: 'user',
+                content: prompt,
+              },
+            ],
+            temperature: 0.1,
+            max_tokens: 4000,
+            response_format: { type: 'json_object' },
+          }),
+          signal: controller.signal,
+        });
 
-      clearTimeout(timeoutId);
+        clearTimeout(timeoutId);
 
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        const cleanErr = sanitizeError(errText, apiKey);
-        if ((res.status === 429 || res.status >= 500) && attempt < maxRetries) {
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          const cleanErr = sanitizeError(errText, apiKey);
+          // If 404 on model name, break inner loop to try next candidate model
+          if (res.status === 404) {
+            lastError = new Error(`OpenRouter model "${currentModel}" not available: ${cleanErr}`);
+            break;
+          }
+          if ((res.status === 429 || res.status >= 500) && attempt < maxRetries) {
+            const backoff = Math.pow(2, attempt) * 1000;
+            await new Promise((r) => setTimeout(r, backoff));
+            continue;
+          }
+          throw new Error(`OpenRouter API error (${res.status}): ${cleanErr}`);
+        }
+
+        const json: any = await res.json();
+        const choice = json.choices?.[0]?.message?.content;
+        if (!choice) {
+          throw new Error('OpenRouter returned an empty response.');
+        }
+
+        return choice;
+      } catch (err: any) {
+        const isAbort = err.name === 'AbortError';
+        const errMsg = isAbort ? 'OpenRouter request timed out after 45s.' : err.message;
+        lastError = new Error(sanitizeError(errMsg, apiKey));
+
+        if (attempt < maxRetries && (isAbort || errMsg.includes('fetch failed') || errMsg.includes('network'))) {
           const backoff = Math.pow(2, attempt) * 1000;
           await new Promise((r) => setTimeout(r, backoff));
           continue;
         }
-        throw new Error(`OpenRouter API error (${res.status}): ${cleanErr}`);
+        break;
       }
-
-      const json: any = await res.json();
-      const choice = json.choices?.[0]?.message?.content;
-      if (!choice) {
-        throw new Error('OpenRouter returned an empty response.');
-      }
-
-      return choice;
-    } catch (err: any) {
-      const isAbort = err.name === 'AbortError';
-      const errMsg = isAbort ? 'OpenRouter request timed out after 45s.' : err.message;
-      lastError = new Error(sanitizeError(errMsg, apiKey));
-
-      if (attempt < maxRetries && (isAbort || errMsg.includes('fetch failed') || errMsg.includes('network'))) {
-        const backoff = Math.pow(2, attempt) * 1000;
-        await new Promise((r) => setTimeout(r, backoff));
-        continue;
-      }
-      break;
     }
   }
 
-  throw lastError || new Error('OpenRouter call failed after retries.');
+  throw lastError || new Error('OpenRouter call failed after trying candidate Claude models.');
 }
 
 export async function handleWorkerRequest(request: Request, env: Env): Promise<Response> {

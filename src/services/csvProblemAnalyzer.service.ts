@@ -781,10 +781,14 @@ export async function requestCsvAiAnalysis(
     })),
   };
 
-  const workerUrl =
-    (import.meta.env.VITE_AI_ANALYZER_WORKER_URL && import.meta.env.VITE_AI_ANALYZER_WORKER_URL.trim().length > 0)
-      ? import.meta.env.VITE_AI_ANALYZER_WORKER_URL.trim()
-      : 'https://hackathon-csv-ai-analyzer.workers.dev/analyze-csv';
+  const rawWorkerEnv = import.meta.env.VITE_AI_ANALYZER_WORKER_URL?.trim();
+  const baseWorkerUrl = (rawWorkerEnv && rawWorkerEnv.length > 0)
+    ? rawWorkerEnv
+    : 'https://hackathon-csv-ai-analyzer.hackathon-csv-ai.workers.dev';
+
+  const workerUrl = baseWorkerUrl.endsWith('/analyze-csv')
+    ? baseWorkerUrl
+    : `${baseWorkerUrl.replace(/\/+$/, '')}/analyze-csv`;
 
   try {
     const token = await auth.currentUser?.getIdToken().catch(() => null);
