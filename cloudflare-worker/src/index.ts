@@ -42,7 +42,8 @@ export interface AnalyzedProblemOutputItem {
   difficulty: 'EASY' | 'MEDIUM' | 'HARD';
 }
 
-const BATCH_CHUNK_SIZE = 20;
+const BATCH_CHUNK_SIZE = 5;
+const CONCURRENCY_LIMIT = 3;
 const DEFAULT_MODEL = '~anthropic/claude-sonnet-latest';
 
 /**
@@ -286,10 +287,7 @@ async function callOpenRouter(prompt: string, apiKey: string, model: string): Pr
   const modelsToTry = [
     model,
     'anthropic/claude-sonnet-4.6',
-    '~anthropic/claude-sonnet-latest',
     'anthropic/claude-sonnet-5',
-    'anthropic/claude-sonnet-4.5',
-    'anthropic/claude-3-haiku',
   ].filter((m, i, arr) => arr.indexOf(m) === i);
 
   let lastError: Error | null = null;
@@ -322,7 +320,7 @@ async function callOpenRouter(prompt: string, apiKey: string, model: string): Pr
               },
             ],
             temperature: 0.1,
-            max_tokens: 4000,
+            max_tokens: 2000,
             response_format: { type: 'json_object' },
           }),
           signal: controller.signal,
@@ -443,55 +441,77 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
         let aiSuccessCount = 0;
         let lastAiError: string | null = null;
 
-        // Process in chunks of 20 items
+        // Split into chunks of 5 items
+        const chunks: CsvProblemInputItem[][] = [];
         for (let i = 0; i < totalItems; i += BATCH_CHUNK_SIZE) {
-          const chunk = inputItems.slice(i, i + BATCH_CHUNK_SIZE);
-          const prompt = buildBatchPrompt(chunk);
+          chunks.push(inputItems.slice(i, i + BATCH_CHUNK_SIZE));
+        }
 
-          let chunkResults: AnalyzedProblemOutputItem[] = [];
+        // Process chunks in concurrent batches of up to CONCURRENCY_LIMIT (4)
+        for (let b = 0; b < chunks.length; b += CONCURRENCY_LIMIT) {
+          const currentBatch = chunks.slice(b, b + CONCURRENCY_LIMIT);
+          const batchPromises = currentBatch.map(async (chunk, batchIdx) => {
+            const chunkNumber = b + batchIdx + 1;
+            const prompt = buildBatchPrompt(chunk);
+            try {
+              const aiResponseText = await callOpenRouter(prompt, apiKey, model);
+              const cleaned = aiResponseText
+                .replace(/^```(?:json)?\s*/i, '')
+                .replace(/\s*```\s*$/i, '')
+                .trim();
 
-          try {
-            const aiResponseText = await callOpenRouter(prompt, apiKey, model);
+              let parsedJson = JSON.parse(cleaned);
 
-            const cleaned = aiResponseText
-              .replace(/^```(?:json)?\s*/i, '')
-              .replace(/\s*```\s*$/i, '')
-              .trim();
-
-            let parsedJson = JSON.parse(cleaned);
-
-            if (!Array.isArray(parsedJson)) {
-              if (parsedJson && Array.isArray(parsedJson.problems)) {
-                parsedJson = parsedJson.problems;
-              } else if (parsedJson && Array.isArray(parsedJson.results)) {
-                parsedJson = parsedJson.results;
-              } else if (parsedJson && Array.isArray(parsedJson.items)) {
-                parsedJson = parsedJson.items;
-              } else {
-                throw new Error('AI response structure is not an array.');
+              if (!Array.isArray(parsedJson)) {
+                if (parsedJson && Array.isArray(parsedJson.problems)) {
+                  parsedJson = parsedJson.problems;
+                } else if (parsedJson && Array.isArray(parsedJson.results)) {
+                  parsedJson = parsedJson.results;
+                } else if (parsedJson && Array.isArray(parsedJson.items)) {
+                  parsedJson = parsedJson.items;
+                } else {
+                  throw new Error('AI response structure is not an array.');
+                }
               }
+
+              // Strict 1:1 mapping against chunk inputs
+              const mappedResults = chunk.map((inputItem, cIdx) => {
+                const matched = parsedJson.find((p: any) => p.sequence === inputItem.sequence) || parsedJson[cIdx];
+                return normalizeAnalyzedItem(matched, inputItem, inputItem.sequence);
+              });
+
+              return {
+                success: true,
+                count: chunk.length,
+                results: mappedResults,
+                error: null,
+              };
+            } catch (err: any) {
+              console.error(`[Worker] Chunk ${chunkNumber} AI call failed:`, err.message);
+              return {
+                success: false,
+                count: 0,
+                results: generateFallbackResults(chunk),
+                error: err.message || 'AI batch analysis failed',
+              };
             }
+          });
 
-            // 1:1 mapping against chunk inputs
-            chunkResults = chunk.map((inputItem, chunkIdx) => {
-              const matched = parsedJson.find((p: any) => p.sequence === inputItem.sequence) || parsedJson[chunkIdx];
-              return normalizeAnalyzedItem(matched, inputItem, inputItem.sequence);
-            });
-
-            aiSuccessCount += chunk.length;
-          } catch (err: any) {
-            console.error(`[Worker] Chunk ${Math.floor(i / BATCH_CHUNK_SIZE) + 1} AI call failed:`, err.message);
-            lastAiError = err.message || 'AI batch analysis failed';
-            chunkResults = generateFallbackResults(chunk);
+          const batchOutputs = await Promise.all(batchPromises);
+          for (const output of batchOutputs) {
+            if (output.success) {
+              aiSuccessCount += output.count;
+            } else if (output.error) {
+              lastAiError = output.error;
+            }
+            allAnalyzedResults.push(...output.results);
           }
-
-          allAnalyzedResults.push(...chunkResults);
         }
 
         // Sort strictly by order / sequence
         allAnalyzedResults.sort((a, b) => a.order - b.order || a.sequence - b.sequence);
 
-        const overallAiSuccess = aiSuccessCount > 0 && !lastAiError;
+        const overallAiSuccess = aiSuccessCount === totalItems && !lastAiError;
 
         return new Response(
           JSON.stringify({

@@ -799,18 +799,18 @@ export async function requestCsvAiAnalysis(
   // Progress heartbeat during network processing
   let currentProgress = 20;
   const progressInterval = setInterval(() => {
-    if (currentProgress < 85) {
-      currentProgress += 10;
-      const chunkCount = Math.ceil(validQuestions.length / 20);
+    if (currentProgress < 90) {
+      currentProgress += 7;
+      const chunkCount = Math.ceil(validQuestions.length / 5);
       onProgress?.(
         currentProgress,
-        `Claude AI analyzing ${validQuestions.length} statements (${chunkCount} batch chunk${chunkCount > 1 ? 's' : ''})...`
+        `Claude AI analyzing ${validQuestions.length} statements (${chunkCount} concurrent chunk${chunkCount > 1 ? 's' : ''})...`
       );
     }
-  }, 3500);
+  }, 2200);
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 75000); // 75s safe timeout
+  const timeoutId = setTimeout(() => controller.abort(), 120000); // 120s safe timeout
 
   try {
     const token = await auth.currentUser?.getIdToken().catch(() => null);
@@ -834,7 +834,7 @@ export async function requestCsvAiAnalysis(
     if (res.ok) {
       const data: CsvAiAnalysisResponse = await res.json();
       if (data && Array.isArray(data.problems) && data.problems.length > 0) {
-        onProgress?.(95, 'Reconciling 1:1 problem statement analysis results...');
+        onProgress?.(98, 'Reconciling 1:1 problem statement analysis results...');
         return data;
       }
     } else {
@@ -854,7 +854,7 @@ export async function requestCsvAiAnalysis(
     clearTimeout(timeoutId);
     const isTimeout = workerErr.name === 'AbortError';
     const errorMsg = isTimeout
-      ? 'OpenRouter AI analysis timed out after 75s. Local validation applied.'
+      ? 'OpenRouter AI analysis timed out after 120s. Local validation applied.'
       : (workerErr.message || 'Cloudflare Worker fetch error');
     console.warn('[CsvAnalyzer] Cloudflare Worker fetch error, applying fallback:', errorMsg);
     return generateClientFallbackResponse(validQuestions, errorMsg);
