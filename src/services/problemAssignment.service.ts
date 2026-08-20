@@ -1158,3 +1158,287 @@ export async function assignNextSequentialProblemToTeam(
     };
   }
 }
+
+/**
+ * Assigns a specific Problem Statement chosen by the Admin to a Team.
+ * Validates that the problem is FREE and executes atomically via Firestore runTransaction.
+ */
+export async function assignSpecificProblemToTeam(
+  teamId: string,
+  teamName: string,
+  statementId: string,
+  adminUser?: { uid?: string; email?: string | null }
+): Promise<SequentialAssignmentResult> {
+  if (!teamId || !statementId) {
+    return { success: false, assigned: false, message: 'Invalid team ID or statement ID provided.' };
+  }
+
+  try {
+    const existingAssignRef = doc(db, 'teamProblemAssignments', teamId);
+    const teamRef = doc(db, 'teams', teamId);
+    const psRef = doc(db, 'problemStatements', statementId);
+
+    const result = await runTransaction(db, async (transaction) => {
+      // 1. Check if problem statement exists and is FREE
+      const psSnap = await transaction.get(psRef);
+      if (!psSnap.exists()) {
+        return {
+          success: false,
+          assigned: false,
+          message: `Problem Statement ${statementId} does not exist in catalog.`,
+        };
+      }
+
+      const psData = psSnap.data() as ProblemStatement;
+      const occupiedSet = await getComprehensiveOccupiedStatementIds(teamId);
+
+      // If occupied by another team, fail safely with the exact required message
+      if (isStatementOccupied(psData, occupiedSet, teamId)) {
+        return {
+          success: false,
+          assigned: false,
+          message: 'This problem statement has already been assigned. Please select another FREE problem statement.',
+        };
+      }
+
+      const now = new Date().toISOString();
+      const isPublished = psData.status === 'published' || psData.status === 'PUBLISHED';
+      const seq = psData.order !== undefined && psData.order !== null ? psData.order : (psData.sequence || 1);
+
+      // Write /teamProblemAssignments/{teamId}
+      transaction.set(
+        existingAssignRef,
+        {
+          teamId,
+          statementId: psData.statementId,
+          problemStatementId: psData.problemStatementId || psData.statementId,
+          problemSequence: seq,
+          order: seq,
+          statementTitle: psData.title,
+          description: psData.description,
+          category: psData.category || 'General',
+          difficulty: psData.difficulty || 'MEDIUM',
+          organization: psData.organization || null,
+          department: psData.department || null,
+          team: psData.team || teamName,
+          aiAnalysis: psData.analysis || psData.evaluationNotes || '',
+          confidence: psData.confidence || 0.9,
+          qualityScore: psData.aiQualityScore || 8,
+          aiIssues: psData.aiIssues || [],
+          aiSuggestions: psData.aiSuggestions || [],
+          requirements: psData.requirements || [],
+          examples: psData.examples || '',
+          technicalGuidelines: psData.technicalGuidelines || '',
+          constraints: psData.constraints || '',
+          expectedOutcome: psData.expectedOutcome || '',
+          instructions: psData.instructions || (psData.technicalGuidelines ? [psData.technicalGuidelines] : []),
+          sourceFileName: psData.sourceFileName || '',
+          assignedAt: now,
+          publishedAt: isPublished ? now : null,
+          assignedBy: adminUser?.email || adminUser?.uid || 'admin_manual_assignment',
+          status: isPublished ? 'PUBLISHED' : 'DRAFT',
+        },
+        { merge: true }
+      );
+
+      // Update /problemStatements/{statementId}
+      transaction.update(psRef, {
+        assignedTeamId: teamId,
+        assignedTeamName: teamName,
+        updatedAt: serverTimestamp(),
+      });
+
+      // Update /teams/{teamId}
+      const teamSnap = await transaction.get(teamRef);
+      if (teamSnap.exists()) {
+        transaction.update(teamRef, {
+          assignedStatementId: psData.statementId,
+          assignedStatementTitle: psData.title,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      // Legacy table
+      const legacyRef = doc(db, 'problemAssignments', `${teamId}_${psData.statementId}`);
+      transaction.set(
+        legacyRef,
+        {
+          assignmentId: `${teamId}_${psData.statementId}`,
+          teamId,
+          problemStatementId: psData.statementId,
+          statementId: psData.statementId,
+          assignmentSequence: seq,
+          status: isPublished ? 'PUBLISHED' : 'DRAFT',
+          assignedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        },
+        { merge: true }
+      );
+
+      return {
+        success: true,
+        assigned: true,
+        statementId: psData.statementId,
+        problemSequence: seq,
+        statementTitle: psData.title,
+        problem: psData,
+        message: `Assigned Problem #${seq} (${psData.statementId}: "${psData.title}") to ${teamName} (${teamId}).`,
+      };
+    });
+
+    return result;
+  } catch (txError: any) {
+    console.error('[ProblemAssignment] assignSpecificProblemToTeam transaction error:', txError);
+    return {
+      success: false,
+      assigned: false,
+      message: `Problem assignment encountered an error: ${txError.message}`,
+    };
+  }
+}
+
+/**
+ * Reassigns a Team's Problem Statement to a new FREE Problem Statement.
+ * Atomically releases the old assignment and sets the new assignment.
+ */
+export async function reassignTeamProblem(
+  teamId: string,
+  teamName: string,
+  newStatementId: string,
+  adminUser?: { uid?: string; email?: string | null }
+): Promise<SequentialAssignmentResult> {
+  if (!teamId || !newStatementId) {
+    return { success: false, assigned: false, message: 'Invalid team ID or statement ID provided.' };
+  }
+
+  try {
+    const existingAssignRef = doc(db, 'teamProblemAssignments', teamId);
+    const teamRef = doc(db, 'teams', teamId);
+    const newPsRef = doc(db, 'problemStatements', newStatementId);
+
+    const result = await runTransaction(db, async (transaction) => {
+      // 1. Verify new statement exists and is FREE
+      const newPsSnap = await transaction.get(newPsRef);
+      if (!newPsSnap.exists()) {
+        return {
+          success: false,
+          assigned: false,
+          message: `Problem Statement ${newStatementId} does not exist.`,
+        };
+      }
+
+      const newPsData = newPsSnap.data() as ProblemStatement;
+      const occupiedSet = await getComprehensiveOccupiedStatementIds(teamId);
+      if (isStatementOccupied(newPsData, occupiedSet, teamId)) {
+        return {
+          success: false,
+          assigned: false,
+          message: 'This problem statement has already been assigned. Please select another FREE problem statement.',
+        };
+      }
+
+      // 2. Check old assignment to release
+      const currentAssignSnap = await transaction.get(existingAssignRef);
+      let oldStatementId: string | null = null;
+      if (currentAssignSnap.exists()) {
+        oldStatementId = currentAssignSnap.data().statementId || null;
+      } else {
+        const teamSnap = await transaction.get(teamRef);
+        if (teamSnap.exists()) {
+          oldStatementId = teamSnap.data().assignedStatementId || null;
+        }
+      }
+
+      // 3. If old statement exists and is different from new, release it
+      if (oldStatementId && oldStatementId !== newStatementId) {
+        const oldPsRef = doc(db, 'problemStatements', oldStatementId);
+        const oldPsSnap = await transaction.get(oldPsRef);
+        if (oldPsSnap.exists()) {
+          transaction.update(oldPsRef, {
+            assignedTeamId: null,
+            assignedTeamName: null,
+            updatedAt: serverTimestamp(),
+          });
+        }
+        // Clean up old legacy assignment record
+        const oldLegacyRef = doc(db, 'problemAssignments', `${teamId}_${oldStatementId}`);
+        transaction.delete(oldLegacyRef);
+      }
+
+      const now = new Date().toISOString();
+      const isPublished = newPsData.status === 'published' || newPsData.status === 'PUBLISHED';
+      const seq = newPsData.order !== undefined && newPsData.order !== null ? newPsData.order : (newPsData.sequence || 1);
+
+      // 4. Assign new statement
+      transaction.set(
+        existingAssignRef,
+        {
+          teamId,
+          statementId: newPsData.statementId,
+          problemStatementId: newPsData.problemStatementId || newPsData.statementId,
+          problemSequence: seq,
+          order: seq,
+          statementTitle: newPsData.title,
+          description: newPsData.description,
+          category: newPsData.category || 'General',
+          difficulty: newPsData.difficulty || 'MEDIUM',
+          organization: newPsData.organization || null,
+          department: newPsData.department || null,
+          team: newPsData.team || teamName,
+          aiAnalysis: newPsData.analysis || newPsData.evaluationNotes || '',
+          confidence: newPsData.confidence || 0.9,
+          qualityScore: newPsData.aiQualityScore || 8,
+          aiIssues: newPsData.aiIssues || [],
+          aiSuggestions: newPsData.aiSuggestions || [],
+          requirements: newPsData.requirements || [],
+          examples: newPsData.examples || '',
+          technicalGuidelines: newPsData.technicalGuidelines || '',
+          constraints: newPsData.constraints || '',
+          expectedOutcome: newPsData.expectedOutcome || '',
+          instructions: newPsData.instructions || (newPsData.technicalGuidelines ? [newPsData.technicalGuidelines] : []),
+          sourceFileName: newPsData.sourceFileName || '',
+          assignedAt: now,
+          publishedAt: isPublished ? now : null,
+          assignedBy: adminUser?.email || adminUser?.uid || 'admin_reassignment',
+          status: isPublished ? 'PUBLISHED' : 'DRAFT',
+        },
+        { merge: true }
+      );
+
+      transaction.update(newPsRef, {
+        assignedTeamId: teamId,
+        assignedTeamName: teamName,
+        updatedAt: serverTimestamp(),
+      });
+
+      const teamSnap = await transaction.get(teamRef);
+      if (teamSnap.exists()) {
+        transaction.update(teamRef, {
+          assignedStatementId: newPsData.statementId,
+          assignedStatementTitle: newPsData.title,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      return {
+        success: true,
+        assigned: true,
+        statementId: newPsData.statementId,
+        problemSequence: seq,
+        statementTitle: newPsData.title,
+        problem: newPsData,
+        message: `Successfully reassigned Team ${teamId} to Problem #${seq} (${newPsData.statementId}: "${newPsData.title}").`,
+      };
+    });
+
+    return result;
+  } catch (err: any) {
+    console.error('[ProblemAssignment] reassignTeamProblem transaction error:', err);
+    return {
+      success: false,
+      assigned: false,
+      message: `Reassignment error: ${err.message}`,
+    };
+  }
+}

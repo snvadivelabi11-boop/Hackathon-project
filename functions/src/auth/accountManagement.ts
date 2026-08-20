@@ -227,40 +227,11 @@ export const getNextTeamPreview = functions.https.onCall(async (data, context) =
   const baseUsername = leaderName ? normalizeUsername(leaderName) : '';
   const generatedUsername = baseUsername ? await getUniqueUsername(db, baseUsername) : '';
 
-  // Calculate next unassigned sequential problem statement preview
-  let defaultProblemStatement: { statementId: string; sequence: number; title: string } | null = null;
-  try {
-    const psSnap = await db.collection('problemStatements').get();
-    if (!psSnap.empty) {
-      const allStatements: any[] = [];
-      psSnap.forEach((d) => allStatements.push({ statementId: d.id, ...d.data() }));
-
-      allStatements.sort((a, b) => {
-        const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence !== undefined && a.sequence !== null ? a.sequence : 0);
-        const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence !== undefined && b.sequence !== null ? b.sequence : 0);
-        if (ordA !== ordB) return ordA - ordB;
-        return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
-      });
-
-      const occupiedIds = await getComprehensiveOccupiedStatementIdsBackend(db);
-      const nextProblem = allStatements.find((st) => !isStatementOccupiedBackend(st, occupiedIds));
-      if (nextProblem) {
-        defaultProblemStatement = {
-          statementId: nextProblem.statementId,
-          sequence: nextProblem.order !== undefined && nextProblem.order !== null ? nextProblem.order : (nextProblem.sequence || 1),
-          title: nextProblem.title,
-        };
-      }
-    }
-  } catch (err) {
-    console.warn('[CloudFunctions] Could not preview next available problem statement:', err);
-  }
-
   return {
     nextTeamNumber: nextNum,
     generatedTeamId,
     generatedUsername,
-    defaultProblemStatement,
+    defaultProblemStatement: null,
   };
 });
 
@@ -271,7 +242,7 @@ export const getNextTeamPreview = functions.https.onCall(async (data, context) =
 export const createTeamAccount = functions.https.onCall(async (data, context) => {
   await verifyAdmin(context);
 
-  const { teamName, leaderName, password } = data;
+  const { teamName, leaderName, password, selectedStatementId } = data || {};
 
   if (!teamName || !leaderName || !password) {
     throw new functions.https.HttpsError('invalid-argument', 'Team Name, Leader Name, and Password are required.');
@@ -391,84 +362,90 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
       { teamName: trimmedTeamName, leaderName: trimmedLeaderName, username: normalizedUsername }
     );
 
-    // 8. Automatically assign next unassigned sequential Problem Statement
+    // 8. Explicit manual problem assignment if requested by Admin
     let assignedStatementId: string | null = null;
     let assignedStatementTitle: string | null = null;
     let assignedProblemSequence: number | null = null;
 
-    try {
-      const existingAssignSnap = await db.collection('teamProblemAssignments').doc(allocatedTeamId).get();
-      if (!existingAssignSnap.exists) {
-        const psSnap = await db.collection('problemStatements').get();
-        if (!psSnap.empty) {
-          const allStatements: any[] = [];
-          psSnap.forEach((d) => allStatements.push({ statementId: d.id, ...d.data() }));
+    if (selectedStatementId && String(selectedStatementId).trim().length > 0) {
+      const targetStatementId = String(selectedStatementId).trim();
+      const psRef = db.collection('problemStatements').doc(targetStatementId);
+      const psSnap = await psRef.get();
 
-          allStatements.sort((a, b) => {
-            const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence !== undefined && a.sequence !== null ? a.sequence : 0);
-            const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence !== undefined && b.sequence !== null ? b.sequence : 0);
-            if (ordA !== ordB) return ordA - ordB;
-            return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
-          });
-
-          const occupiedIds = await getComprehensiveOccupiedStatementIdsBackend(db, allocatedTeamId);
-          const nextProblem = allStatements.find((st) => !isStatementOccupiedBackend(st, occupiedIds, allocatedTeamId));
-          if (nextProblem) {
-            const seq = nextProblem.order !== undefined && nextProblem.order !== null ? nextProblem.order : (nextProblem.sequence || 1);
-            const isPublished = nextProblem.status === 'published' || nextProblem.status === 'PUBLISHED';
-            const nowIso = new Date().toISOString();
-
-            await db.collection('teamProblemAssignments').doc(allocatedTeamId).set({
-              teamId: allocatedTeamId,
-              statementId: nextProblem.statementId,
-              problemStatementId: nextProblem.problemStatementId || nextProblem.statementId,
-              problemSequence: seq,
-              order: seq,
-              statementTitle: nextProblem.title,
-              description: nextProblem.description,
-              category: nextProblem.category || 'General',
-              difficulty: nextProblem.difficulty || 'MEDIUM',
-              organization: nextProblem.organization || null,
-              department: nextProblem.department || null,
-              team: nextProblem.team || trimmedTeamName,
-              aiAnalysis: nextProblem.analysis || nextProblem.evaluationNotes || '',
-              confidence: nextProblem.confidence || 0.9,
-              qualityScore: nextProblem.aiQualityScore || 8,
-              aiIssues: nextProblem.aiIssues || [],
-              aiSuggestions: nextProblem.aiSuggestions || [],
-              requirements: nextProblem.requirements || [],
-              examples: nextProblem.examples || '',
-              technicalGuidelines: nextProblem.technicalGuidelines || '',
-              constraints: nextProblem.constraints || '',
-              expectedOutcome: nextProblem.expectedOutcome || '',
-              instructions: nextProblem.instructions || (nextProblem.technicalGuidelines ? [nextProblem.technicalGuidelines] : []),
-              sourceFileName: nextProblem.sourceFileName || '',
-              assignedAt: nowIso,
-              publishedAt: isPublished ? nowIso : null,
-              assignedBy: context.auth!.token.email || context.auth!.uid || 'system_auto_assignment',
-              status: isPublished ? 'PUBLISHED' : 'DRAFT',
-            }, { merge: true });
-
-            await db.collection('problemStatements').doc(nextProblem.statementId).update({
-              assignedTeamId: allocatedTeamId,
-              assignedTeamName: trimmedTeamName,
-              updatedAt: now,
-            });
-
-            await db.collection('teams').doc(allocatedTeamId).update({
-              assignedStatementId: nextProblem.statementId,
-              assignedStatementTitle: nextProblem.title,
-              updatedAt: now,
-            });
-
-            assignedStatementId = nextProblem.statementId;
-            assignedStatementTitle = nextProblem.title;
-            assignedProblemSequence = seq;
-          }
-        }
+      if (!psSnap.exists) {
+        throw new functions.https.HttpsError('not-found', `Problem Statement ${targetStatementId} does not exist.`);
       }
-    } catch (assignError) {
-      console.warn('[CloudFunctions] Non-blocking auto problem assignment warning:', assignError);
+
+      const psData = psSnap.data() as any;
+      const occupiedIds = await getComprehensiveOccupiedStatementIdsBackend(db, allocatedTeamId);
+
+      if (isStatementOccupiedBackend(psData, occupiedIds, allocatedTeamId)) {
+        throw new functions.https.HttpsError('already-exists', 'This problem statement has already been assigned. Please select another FREE problem statement.');
+      }
+
+      const seq = psData.order !== undefined && psData.order !== null ? psData.order : (psData.sequence || 1);
+      const isPublished = psData.status === 'published' || psData.status === 'PUBLISHED';
+      const nowIso = new Date().toISOString();
+
+      await db.collection('teamProblemAssignments').doc(allocatedTeamId).set({
+        teamId: allocatedTeamId,
+        statementId: psData.statementId || targetStatementId,
+        problemStatementId: psData.problemStatementId || targetStatementId,
+        problemSequence: seq,
+        order: seq,
+        statementTitle: psData.title,
+        description: psData.description,
+        category: psData.category || 'General',
+        difficulty: psData.difficulty || 'MEDIUM',
+        organization: psData.organization || null,
+        department: psData.department || null,
+        team: psData.team || trimmedTeamName,
+        aiAnalysis: psData.analysis || psData.evaluationNotes || '',
+        confidence: psData.confidence || 0.9,
+        qualityScore: psData.aiQualityScore || 8,
+        aiIssues: psData.aiIssues || [],
+        aiSuggestions: psData.aiSuggestions || [],
+        requirements: psData.requirements || [],
+        examples: psData.examples || '',
+        technicalGuidelines: psData.technicalGuidelines || '',
+        constraints: psData.constraints || '',
+        expectedOutcome: psData.expectedOutcome || '',
+        instructions: psData.instructions || (psData.technicalGuidelines ? [psData.technicalGuidelines] : []),
+        sourceFileName: psData.sourceFileName || '',
+        assignedAt: nowIso,
+        publishedAt: isPublished ? nowIso : null,
+        assignedBy: context.auth!.token.email || context.auth!.uid || 'admin_manual_assignment',
+        status: isPublished ? 'PUBLISHED' : 'DRAFT',
+      }, { merge: true });
+
+      await psRef.update({
+        assignedTeamId: allocatedTeamId,
+        assignedTeamName: trimmedTeamName,
+        updatedAt: now,
+      });
+
+      await db.collection('teams').doc(allocatedTeamId).update({
+        assignedStatementId: psData.statementId || targetStatementId,
+        assignedStatementTitle: psData.title,
+        updatedAt: now,
+      });
+
+      // Legacy table
+      await db.collection('problemAssignments').doc(`${allocatedTeamId}_${targetStatementId}`).set({
+        assignmentId: `${allocatedTeamId}_${targetStatementId}`,
+        teamId: allocatedTeamId,
+        problemStatementId: targetStatementId,
+        statementId: targetStatementId,
+        assignmentSequence: seq,
+        status: isPublished ? 'PUBLISHED' : 'DRAFT',
+        assignedAt: nowIso,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      }, { merge: true });
+
+      assignedStatementId = targetStatementId;
+      assignedStatementTitle = psData.title;
+      assignedProblemSequence = seq;
     }
 
     return {

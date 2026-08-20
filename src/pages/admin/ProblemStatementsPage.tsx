@@ -58,6 +58,7 @@ import {
   ExclamationCircleOutlined,
   SaveOutlined,
   FileSearchOutlined,
+  SwapOutlined,
 } from '@ant-design/icons';
 import {
   subscribeToProblemStatements,
@@ -74,6 +75,7 @@ import {
   subscribeToAssignmentConfig,
   saveAssignmentConfig,
   reassignProblemStatement,
+  reassignTeamProblem,
   deleteProblemStatementCascade,
   subscribeToImports,
   checkPreviousImport,
@@ -142,6 +144,12 @@ export const ProblemStatementsPage: React.FC = () => {
 
   // Interactive Assignment Mapping Override State
   const [customAssignmentMapping, setCustomAssignmentMapping] = useState<ProblemAssignmentPreviewItem[] | null>(null);
+
+  // Manual Reassignment Modal State
+  const [isReassignModalOpen, setIsReassignModalOpen] = useState(false);
+  const [reassignTarget, setReassignTarget] = useState<{ statement: ProblemStatement; teamId: string } | null>(null);
+  const [selectedNewStatementId, setSelectedNewStatementId] = useState<string | null>(null);
+  const [reassigning, setReassigning] = useState(false);
 
   const [loadingAction, setLoadingAction] = useState(false);
   const [deletingAll, setDeletingAll] = useState(false);
@@ -251,6 +259,50 @@ export const ProblemStatementsPage: React.FC = () => {
       message.error(err.message || 'Failed to save problem statement.');
     } finally {
       setLoadingAction(false);
+    }
+  };
+
+  // Currently FREE problem statements for manual reassignment
+  const freeProblemStatements = useMemo(() => {
+    return statements.filter((st) => {
+      const isPub = st.status === 'PUBLISHED' || st.status === 'published' || st.status === 'active';
+      const isAssigned = (st.assignedTeamId && st.assignedTeamId.trim().length > 0) ||
+        (Array.isArray(st.assignedTeamIds) && st.assignedTeamIds.length > 0);
+      return !isPub && !isAssigned;
+    });
+  }, [statements]);
+
+  const handleOpenReassign = (record: ProblemStatement, teamId: string) => {
+    setReassignTarget({ statement: record, teamId });
+    setSelectedNewStatementId(null);
+    setIsReassignModalOpen(true);
+  };
+
+  const handleConfirmReassign = async () => {
+    if (!reassignTarget || !selectedNewStatementId) {
+      message.error('Please select a FREE problem statement.');
+      return;
+    }
+    setReassigning(true);
+    try {
+      const teamObj = teams.find((t) => t.teamId === reassignTarget.teamId);
+      const teamName = teamObj?.teamName || reassignTarget.teamId;
+      const res = await reassignTeamProblem(reassignTarget.teamId, teamName, selectedNewStatementId, {
+        uid: user?.uid,
+        email: user?.email,
+      });
+      if (res.success) {
+        message.success(res.message);
+        setIsReassignModalOpen(false);
+        setReassignTarget(null);
+        setSelectedNewStatementId(null);
+      } else {
+        message.error(res.message);
+      }
+    } catch (err: any) {
+      message.error(err.message || 'Reassignment failed');
+    } finally {
+      setReassigning(false);
     }
   };
 
@@ -579,22 +631,27 @@ export const ProblemStatementsPage: React.FC = () => {
       },
     },
     {
-      title: 'Assigned Teams (Live / Draft)',
+      title: 'Assigned Team',
       key: 'assignedTeam',
       render: (_: any, record: ProblemStatement) => {
+        const isPub = record.status === 'PUBLISHED' || record.status === 'published' || record.status === 'active';
         const pItem = currentAssignmentMapping.find((m) => m.statementId === record.statementId);
-        if (pItem && pItem.assignedTeamIds.length > 0) {
+        const assignedIds = pItem && pItem.assignedTeamIds.length > 0
+          ? pItem.assignedTeamIds
+          : (record.assignedTeamId ? [record.assignedTeamId] : (Array.isArray(record.assignedTeamIds) ? record.assignedTeamIds : []));
+
+        if (assignedIds.length > 0) {
           return (
             <Space wrap size={4}>
-              {pItem.assignedTeamIds.map((tid) => (
-                <Tag key={tid} color="purple" style={{ fontWeight: 700, fontSize: '11px' }}>
-                  {tid}
+              {assignedIds.map((tid: string) => (
+                <Tag key={tid} color={isPub ? 'blue' : 'purple'} style={{ fontWeight: 700, fontSize: '11px' }}>
+                  {isPub ? `PUBLISHED — ${tid}` : `ASSIGNED — ${tid}`}
                 </Tag>
               ))}
             </Space>
           );
         }
-        return <Tag color="default">Unassigned</Tag>;
+        return <Tag color="green" style={{ fontWeight: 700 }}>FREE</Tag>;
       },
     },
     {
@@ -620,39 +677,57 @@ export const ProblemStatementsPage: React.FC = () => {
     {
       title: 'Actions',
       key: 'actions',
-      width: 150,
-      render: (_: any, record: ProblemStatement) => (
-        <Space size="small">
-          <Tooltip title="View Full Specifications">
-            <Button
-              size="small"
-              icon={<EyeOutlined />}
-              onClick={() => {
-                setSelectedForView(record);
-                setIsViewDrawerOpen(true);
-              }}
-            />
-          </Tooltip>
+      width: 170,
+      render: (_: any, record: ProblemStatement) => {
+        const pItem = currentAssignmentMapping.find((m) => m.statementId === record.statementId);
+        const assignedIds = pItem && pItem.assignedTeamIds.length > 0
+          ? pItem.assignedTeamIds
+          : (record.assignedTeamId ? [record.assignedTeamId] : (Array.isArray(record.assignedTeamIds) ? record.assignedTeamIds : []));
 
-          <Tooltip title="Edit Specifications">
-            <Button
-              size="small"
-              icon={<EditOutlined />}
-              onClick={() => handleOpenEditModal(record)}
-            />
-          </Tooltip>
+        return (
+          <Space size="small">
+            <Tooltip title="View Full Specifications">
+              <Button
+                size="small"
+                icon={<EyeOutlined />}
+                onClick={() => {
+                  setSelectedForView(record);
+                  setIsViewDrawerOpen(true);
+                }}
+              />
+            </Tooltip>
 
-          <Popconfirm
-            title="Delete this problem statement?"
-            description="Deleting will remove this problem statement permanently."
-            onConfirm={() => handleDeleteCascade(record)}
-            okText="Delete"
-            okType="danger"
-          >
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
-        </Space>
-      ),
+            <Tooltip title="Edit Specifications">
+              <Button
+                size="small"
+                icon={<EditOutlined />}
+                onClick={() => handleOpenEditModal(record)}
+              />
+            </Tooltip>
+
+            {assignedIds.length > 0 && (
+              <Tooltip title="Change / Reassign Team Problem">
+                <Button
+                  size="small"
+                  icon={<SwapOutlined />}
+                  style={{ color: '#722ed1', borderColor: '#d3adf7' }}
+                  onClick={() => handleOpenReassign(record, assignedIds[0])}
+                />
+              </Tooltip>
+            )}
+
+            <Popconfirm
+              title="Delete this problem statement?"
+              description="Deleting will remove this problem statement permanently."
+              onConfirm={() => handleDeleteCascade(record)}
+              okText="Delete"
+              okType="danger"
+            >
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Popconfirm>
+          </Space>
+        );
+      },
     },
   ];
 
@@ -1456,6 +1531,106 @@ export const ProblemStatementsPage: React.FC = () => {
           </div>
         )}
       </Drawer>
+
+      {/* ========================================================================= */}
+      {/* MANUAL REASSIGN PROBLEM MODAL                                             */}
+      {/* ========================================================================= */}
+      <Modal
+        title={
+          <Space>
+            <SwapOutlined style={{ color: '#722ed1' }} />
+            <span>Change / Reassign Team Problem Statement</span>
+          </Space>
+        }
+        open={isReassignModalOpen}
+        onCancel={() => {
+          setIsReassignModalOpen(false);
+          setReassignTarget(null);
+          setSelectedNewStatementId(null);
+        }}
+        onOk={handleConfirmReassign}
+        okText="Confirm Reassignment"
+        confirmLoading={reassigning}
+        destroyOnClose
+        centered
+        width={560}
+      >
+        {reassignTarget && (
+          <div>
+            <Alert
+              type="info"
+              showIcon
+              message="Manual Problem Reassignment"
+              description="Select a currently FREE problem statement to reassign this team. The previous problem statement will be released back to FREE status only upon explicit confirmation."
+              style={{ marginBottom: 16 }}
+            />
+
+            <div style={{ background: '#f8fafc', padding: 14, borderRadius: 8, border: '1px solid #e2e8f0', marginBottom: 16 }}>
+              <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between' }}>
+                <Text type="secondary">Team ID:</Text>
+                <Tag color="purple" style={{ fontWeight: 800 }}>{reassignTarget.teamId}</Tag>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <Text type="secondary">Current Problem:</Text>
+                <Text strong>{reassignTarget.statement.title} ({reassignTarget.statement.statementId})</Text>
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 8 }}>
+              <Text strong>Select New FREE Problem Statement:</Text>
+            </div>
+
+            <Select
+              showSearch
+              placeholder="Select a FREE problem statement..."
+              value={selectedNewStatementId}
+              onChange={(val) => setSelectedNewStatementId(val)}
+              style={{ width: '100%' }}
+              filterOption={(input, option) => {
+                if (!option) return false;
+                const searchStr = String((option as any).searchValue || '').toLowerCase();
+                return searchStr.includes(input.toLowerCase());
+              }}
+            >
+              {freeProblemStatements.map((p) => {
+                const ord = p.order !== undefined && p.order !== null ? p.order : (p.sequence || 1);
+                return (
+                  <Select.Option
+                    key={p.statementId}
+                    value={p.statementId}
+                    searchValue={`Problem #${ord} ${p.statementId} ${p.title}`}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Space size={8} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '80%' }}>
+                        <Tag color="blue" style={{ fontWeight: 800, fontSize: '11px', margin: 0 }}>
+                          #{ord}
+                        </Tag>
+                        <span style={{ fontFamily: 'monospace', fontWeight: 600, color: '#1d39c4', fontSize: '12px' }}>
+                          {p.statementId}
+                        </span>
+                        <span style={{ fontWeight: 600, color: '#1e293b', fontSize: '13px' }}>
+                          {p.title}
+                        </span>
+                      </Space>
+                      <Tag color="green" style={{ fontSize: '10px', fontWeight: 700, margin: 0 }}>
+                        FREE
+                      </Tag>
+                    </div>
+                  </Select.Option>
+                );
+              })}
+            </Select>
+
+            {freeProblemStatements.length === 0 && (
+              <Alert
+                type="warning"
+                message="No FREE problem statements are currently available for reassignment."
+                style={{ marginTop: 12 }}
+              />
+            )}
+          </div>
+        )}
+      </Modal>
 
       {/* ========================================================================= */}
       {/* CSV PROBLEM STATEMENT ANALYZER MODAL                                      */}

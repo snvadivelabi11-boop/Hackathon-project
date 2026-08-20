@@ -23,12 +23,14 @@ import { Team, UserProfile } from '../types';
 import {
   getNextAvailableProblemStatement,
   assignNextSequentialProblemToTeam,
+  assignSpecificProblemToTeam,
 } from './problemAssignment.service';
 
 export interface CreateAccountInput {
   teamName: string;
   leaderName: string;
   password: string;
+  selectedStatementId?: string | null;
 }
 
 export interface NextTeamPreview {
@@ -181,21 +183,35 @@ export function formatTeamDeletionError(error: any): string {
   return 'Team deletion failed. Please try again.';
 }
 
+const USERNAME_BLACKLIST = new Set([
+  'admin',
+  'administrator',
+  'evaluator',
+  'judge',
+  'root',
+  'system',
+  'test',
+  'null',
+  'undefined',
+  'hackathon',
+  'superuser',
+]);
+
 /**
- * Finds the next available unique username by checking existing Firestore records
+ * Ensures username uniqueness in Firestore users and teams collections
  */
-async function findUniqueUsername(baseUsername: string): Promise<string> {
-  let candidate = baseUsername;
-  let suffix = 2;
+export async function findUniqueUsername(baseUsername: string): Promise<string> {
+  const safeBase = USERNAME_BLACKLIST.has(baseUsername) ? `${baseUsername}_team` : baseUsername;
+  let candidate = safeBase;
+  let suffix = 1;
 
   while (true) {
-    const qTeams = query(collection(db, 'teams'), where('username', '==', candidate));
-    const snapTeams = await getDocs(qTeams);
+    const [userCheck, teamCheck] = await Promise.all([
+      getDocs(query(collection(db, 'users'), where('username', '==', candidate))),
+      getDocs(query(collection(db, 'teams'), where('username', '==', candidate))),
+    ]);
 
-    const qUsers = query(collection(db, 'users'), where('username', '==', candidate));
-    const snapUsers = await getDocs(qUsers);
-
-    if (snapTeams.empty && snapUsers.empty) {
+    if (userCheck.empty && teamCheck.empty) {
       return candidate;
     }
 
@@ -230,7 +246,7 @@ async function calculateNextSequentialTeamId(): Promise<{ nextNum: number; teamI
 }
 
 /**
- * Previews the next sequential Team ID, generated username, and default Problem Statement for the Admin UI.
+ * Previews the next sequential Team ID and generated username for the Admin UI.
  */
 export async function getNextTeamPreview(leaderName?: string): Promise<NextTeamPreview> {
   const { nextNum, teamId } = await calculateNextSequentialTeamId();
@@ -245,38 +261,24 @@ export async function getNextTeamPreview(leaderName?: string): Promise<NextTeamP
     }
   }
 
-  // Fetch next available unassigned Problem Statement preview
-  let defaultProblemStatement: NextTeamPreview['defaultProblemStatement'] = null;
-  try {
-    const psPreview = await getNextAvailableProblemStatement();
-    if (psPreview.nextProblem) {
-      defaultProblemStatement = {
-        statementId: psPreview.nextProblem.statementId,
-        sequence: psPreview.nextProblem.sequence || psPreview.nextProblem.order || 1,
-        title: psPreview.nextProblem.title,
-      };
-    }
-  } catch (err) {
-    console.warn('[AccountsService] Could not preview next available problem statement:', err);
-  }
-
   return {
     nextTeamNumber: nextNum,
     generatedTeamId: teamId,
     generatedUsername: generatedUsername || (leaderName ? generateLocalUsername(leaderName) : ''),
-    defaultProblemStatement,
+    defaultProblemStatement: null,
   };
 }
 
 /**
  * Creates a new team account with sequential Team ID (TEAM001..TEAM100), unique username,
  * Firebase Authentication credentials, and Firestore documents.
- * Automatically assigns the next available unassigned Problem Statement in sequential order (1..N).
+ * Explicitly assigns the Admin-selected Problem Statement if provided.
  */
 export async function createTeamAccount(input: CreateAccountInput): Promise<CreateAccountResult> {
   const teamName = input.teamName.trim();
   const leaderName = input.leaderName.trim();
   const password = input.password;
+  const selectedStatementId = input.selectedStatementId ? input.selectedStatementId.trim() : null;
 
   if (!teamName) throw new Error('Please enter Team Name.');
   if (!leaderName) throw new Error('Please enter Leader Name.');
@@ -289,16 +291,18 @@ export async function createTeamAccount(input: CreateAccountInput): Promise<Crea
       teamName,
       leaderName,
       password,
+      selectedStatementId,
     });
     if (response.data?.success) {
-      // Also ensure client-side sequential problem assignment if Cloud Function didn't perform it
-      try {
-        await assignNextSequentialProblemToTeam(response.data.teamId, teamName, {
-          uid: auth.currentUser?.uid,
-          email: auth.currentUser?.email,
-        });
-      } catch (e) {
-        console.warn('[AccountsService] Cloud Function follow-up problem assignment warning:', e);
+      if (selectedStatementId && !response.data.assignedStatementId) {
+        try {
+          await assignSpecificProblemToTeam(response.data.teamId, teamName, selectedStatementId, {
+            uid: auth.currentUser?.uid,
+            email: auth.currentUser?.email,
+          });
+        } catch (e) {
+          console.warn('[AccountsService] Cloud Function follow-up problem assignment warning:', e);
+        }
       }
       return response.data;
     }
@@ -398,26 +402,26 @@ export async function createTeamAccount(input: CreateAccountInput): Promise<Crea
       targetType: 'account',
       targetId: teamId,
       timestamp: new Date().toISOString(),
-      metadata: { teamName, leaderName, username, teamId },
+      metadata: { teamName, leaderName, username, teamId, selectedStatementId },
     }).catch(() => {});
 
-    // Automatically assign the next available sequential Problem Statement
+    // Explicit manual problem assignment if requested by Admin
     let assignedStatementId: string | null = null;
     let assignedStatementTitle: string | null = null;
     let assignedProblemSequence: number | null = null;
 
-    try {
-      const assignResult = await assignNextSequentialProblemToTeam(teamId, teamName, {
+    if (selectedStatementId) {
+      const assignResult = await assignSpecificProblemToTeam(teamId, teamName, selectedStatementId, {
         uid: auth.currentUser?.uid,
         email: auth.currentUser?.email,
       });
-      if (assignResult.success && (assignResult.assigned || assignResult.alreadyAssigned)) {
+      if (assignResult.success && assignResult.assigned) {
         assignedStatementId = assignResult.statementId || null;
         assignedStatementTitle = assignResult.statementTitle || null;
         assignedProblemSequence = assignResult.problemSequence || null;
+      } else if (!assignResult.success) {
+        throw new Error(assignResult.message || 'This problem statement has already been assigned. Please select another FREE problem statement.');
       }
-    } catch (assignErr: any) {
-      console.warn('[AccountsService] Auto problem assignment non-blocking warning:', assignErr);
     }
 
     return {
