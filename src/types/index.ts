@@ -254,6 +254,16 @@ export interface Team {
   status: AccountStatus;
   assignedStatementId?: string;
   assignedStatementTitle?: string;
+  assignedProblemId?: string;
+  assignedProblemCode?: string;
+  assignedProblemOrder?: number;
+  problemStatementId?: string;
+  problemStatementCode?: string;
+  problemStatementOrder?: number;
+  assignmentStatus?: string;
+  assignmentLocked?: boolean;
+  assignmentSource?: string;
+  assignedAt?: any;
   membersCount?: number;
   selectionStatus?: SelectionStatus;
   isSelectionPublished?: boolean;

@@ -252,6 +252,31 @@ export const TeamsPage: React.FC = () => {
       key: 'leaderName',
     },
     {
+      title: 'Assigned Problem',
+      key: 'assignedProblem',
+      render: (_: any, record: Team) => {
+        const psId = record.assignedStatementId || record.problemStatementId || record.assignedProblemId;
+        const psTitle = record.assignedStatementTitle || '';
+        const psOrder = record.assignedProblemOrder || record.problemStatementOrder;
+        if (!psId) {
+          return <Tag color="default">UNASSIGNED</Tag>;
+        }
+        return (
+          <div>
+            <Space size={4}>
+              {psOrder && <Tag color="blue" style={{ fontWeight: 800, fontSize: '11px' }}>#{psOrder}</Tag>}
+              <Tag color="green" style={{ fontWeight: 700, fontSize: '11px' }}>{psId}</Tag>
+            </Space>
+            {psTitle && (
+              <div style={{ fontSize: '12px', color: '#475569', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {psTitle}
+              </div>
+            )}
+          </div>
+        );
+      },
+    },
+    {
       title: 'Submissions',
       key: 'submissions',
       render: (_: any, record: Team) => {
@@ -506,6 +531,30 @@ export const TeamsPage: React.FC = () => {
               <Col span={12}>
                 <Text type="secondary">Total Score:</Text>
                 <div><Text strong style={{ color: '#1677ff' }}>{getTeamTotalScore(selectedTeam.teamId) ?? 'Pending'} / {totalMaxMarks} Marks</Text></div>
+              </Col>
+              <Col span={24}>
+                <Text type="secondary">Assigned Problem Statement:</Text>
+                <div style={{ marginTop: 4 }}>
+                  {selectedTeam.assignedStatementId || selectedTeam.problemStatementId ? (
+                    <Space size={6}>
+                      {selectedTeam.assignedProblemOrder && (
+                        <Tag color="blue" style={{ fontWeight: 800 }}>
+                          Problem #{selectedTeam.assignedProblemOrder}
+                        </Tag>
+                      )}
+                      <Tag color="green" style={{ fontWeight: 700 }}>
+                        {selectedTeam.assignedStatementId || selectedTeam.problemStatementId}
+                      </Tag>
+                      {selectedTeam.assignedStatementTitle && (
+                        <Text strong style={{ fontSize: '13px' }}>
+                          {selectedTeam.assignedStatementTitle}
+                        </Text>
+                      )}
+                    </Space>
+                  ) : (
+                    <Tag color="default">UNASSIGNED</Tag>
+                  )}
+                </div>
               </Col>
             </Row>
           </div>

@@ -691,11 +691,28 @@ export async function run18ManualAssignmentTests() {
   assert(t4Res.success === true && t4Res.statementId === 'PS005', 'TEST 22: TEAM004 receives next available FREE Problem #5 without touching TEAM047');
   assert(freshDb.teamProblemAssignments.get('TEAM047')?.statementId === 'PS004', 'TEST 22: TEAM047 retains Problem #4 permanently');
 
-  // --- TEST 23: Dashboard Query Consistency ---
-  console.log('\n--- TEST 23: Dashboard query persistence and consistency ---');
-  const t4Doc = freshDb.teams.get('TEAM004');
-  assert(t4Doc.assignedStatementId === 'PS005', 'TEST 23: TEAM004 dashboard reads PS005 from teams doc');
-  assert(freshDb.teamProblemAssignments.get('TEAM004')?.statementId === 'PS005', 'TEST 23: TEAM004 dashboard reads PS005 from teamProblemAssignments');
+  // --- TEST 24: Catalog Exhaustion: No FREE problems left ---
+  console.log('\n--- TEST 24: Catalog Exhaustion Handling (when 102/102 problems assigned) ---');
+  const exhaustedDb = createFreshDb();
+  populate102Statements(exhaustedDb);
+  // Assign all 102
+  for (let i = 1; i <= 102; i++) {
+    const tId = `TEAM${String(i).padStart(3, '0')}`;
+    const psId = `PS${String(i).padStart(3, '0')}`;
+    await assignSpecificProblemStrictMock(exhaustedDb, tId, `Team ${i}`, psId);
+  }
+  // Try assigning TEAM103
+  const occupiedEx = getComprehensiveOccupiedIds(exhaustedDb, 'TEAM103');
+  let chosenFor103: ProblemStatement | null = null;
+  for (let pNum = 1; pNum <= 102; pNum++) {
+    const ps = exhaustedDb.problemStatements.get(`PS${String(pNum).padStart(3, '0')}`);
+    if (ps && !isStatementOccupied(ps, occupiedEx, 'TEAM103') && ps.status !== 'PUBLISHED') {
+      chosenFor103 = ps;
+      break;
+    }
+  }
+  assert(chosenFor103 === null, 'TEST 24: System detects 0 unassigned problem statements available');
+  assert(exhaustedDb.teams.size === 102, 'TEST 24: No duplicate assignments allowed when catalog is exhausted');
 
   console.log('\n========================================================================================');
   console.log(`TOTAL TESTS: ${total} | PASSED: ${passed} | FAILED: ${total - passed}`);

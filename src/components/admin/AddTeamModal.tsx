@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Modal,
   Form,
@@ -10,8 +10,6 @@ import {
   Alert,
   Tag,
   Space,
-  Select,
-  Segmented,
   message,
 } from 'antd';
 import {
@@ -44,17 +42,6 @@ interface AddTeamModalProps {
   onSuccess?: (createdTeam: { teamId: string; username: string; teamName: string; leaderName: string }) => void;
 }
 
-interface ProblemOptionItem {
-  statementId: string;
-  orderNum: number;
-  title: string;
-  category: string;
-  isFree: boolean;
-  statusType: 'FREE' | 'ASSIGNED' | 'PUBLISHED';
-  statusLabel: string;
-  assignedTeam?: string;
-}
-
 export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuccess }) => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
@@ -62,9 +49,12 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [previewTeamId, setPreviewTeamId] = useState<string>('TEAM001');
   const [previewUsername, setPreviewUsername] = useState<string>('');
-  const [problemOptions, setProblemOptions] = useState<ProblemOptionItem[]>([]);
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'FREE' | 'ASSIGNED'>('ALL');
-  const [selectedStatementId, setSelectedStatementId] = useState<string | null>(null);
+  const [autoAssignedProblem, setAutoAssignedProblem] = useState<{
+    statementId: string;
+    orderNum: number;
+    title: string;
+    category?: string;
+  } | null>(null);
 
   const [createdSuccessData, setCreatedSuccessData] = useState<{
     teamId: string;
@@ -80,7 +70,6 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
     if (open) {
       setErrorMessage(null);
       setCreatedSuccessData(null);
-      setSelectedStatementId(null);
       form.resetFields();
 
       const loadInitial = async () => {
@@ -89,12 +78,12 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
       };
       loadInitial();
 
-      // Real-time snapshot listeners while modal is open to ensure instant reflection of database assignments
+      // Real-time snapshot listeners while modal is open
       const unsubPS = onSnapshot(collection(db, 'problemStatements'), () => {
-        fetchProblemStatements();
+        fetchProblemStatements(previewTeamId);
       });
       const unsubTPA = onSnapshot(collection(db, 'teamProblemAssignments'), () => {
-        fetchProblemStatements();
+        fetchProblemStatements(previewTeamId);
       });
 
       return () => {
@@ -134,7 +123,6 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
         rawList.push({ statementId: doc.id, ...doc.data() } as ProblemStatement);
       });
 
-      // Sort deterministically by order / sequence / statementId
       rawList.sort((a, b) => {
         const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence !== undefined && a.sequence !== null ? a.sequence : 0);
         const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence !== undefined && b.sequence !== null ? b.sequence : 0);
@@ -142,91 +130,56 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
         return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
       });
 
-      const options: ProblemOptionItem[] = rawList.map((ps) => {
-        const ord = ps.order !== undefined && ps.order !== null ? ps.order : (ps.sequence || 1);
-        const isPub = ps.status === 'PUBLISHED' || ps.status === 'published' || ps.status === 'active';
-        const isOcc = isStatementOccupied(ps, occupiedSet);
-        const assignedTeam = ps.assignedTeamId || (Array.isArray(ps.assignedTeamIds) && ps.assignedTeamIds[0]) || ps.team || undefined;
-
-        let statusType: 'FREE' | 'ASSIGNED' | 'PUBLISHED' = 'FREE';
-        let statusLabel = 'FREE';
-        let isFree = true;
-
-        if (isPub) {
-          statusType = 'PUBLISHED';
-          statusLabel = assignedTeam ? `PUBLISHED — ${assignedTeam}` : 'PUBLISHED';
-          isFree = false;
-        } else if (isOcc) {
-          statusType = 'ASSIGNED';
-          statusLabel = assignedTeam ? `ASSIGNED — ${assignedTeam}` : 'ASSIGNED';
-          isFree = false;
-        }
-
-        return {
-          statementId: ps.statementId,
-          orderNum: ord,
-          title: ps.title || 'Untitled Problem',
-          category: ps.category || 'General',
-          isFree,
-          statusType,
-          statusLabel,
-          assignedTeam,
-        };
-      });
-
-      setProblemOptions(options);
-
-      // Determine intended sequential problem based on target Team number (e.g. TEAM001 -> #1, TEAM004 -> #4)
       const currentTeamId = teamIdHint || previewTeamId || 'TEAM001';
       const numMatch = currentTeamId.match(/\d+/);
       const targetTeamNum = numMatch ? parseInt(numMatch[0], 10) : 1;
 
-      // 1. Exact match for target team number (e.g. TEAM004 -> Problem #4)
-      const exactMatch = options.find((p) => p.isFree && p.orderNum === targetTeamNum);
+      const exactMatch = rawList.find((p) => {
+        const ord = p.order !== undefined && p.order !== null ? p.order : (p.sequence || 1);
+        const isPub = p.status === 'PUBLISHED' || p.status === 'published' || p.status === 'active';
+        return ord === targetTeamNum && !isPub && !isStatementOccupied(p, occupiedSet);
+      });
 
-      // 2. Next FREE problem in ascending order starting from targetTeamNum (e.g. #5, #6...)
-      const nextAscendingFree = options.find((p) => p.isFree && p.orderNum >= targetTeamNum);
+      const nextAscendingFree = rawList.find((p) => {
+        const ord = p.order !== undefined && p.order !== null ? p.order : (p.sequence || 1);
+        const isPub = p.status === 'PUBLISHED' || p.status === 'published' || p.status === 'active';
+        return ord >= targetTeamNum && !isPub && !isStatementOccupied(p, occupiedSet);
+      });
 
-      // 3. Fallback: lowest order FREE problem anywhere in catalog
-      const fallbackLowestFree = options.find((p) => p.isFree);
+      const fallbackLowestFree = rawList.find((p) => {
+        const isPub = p.status === 'PUBLISHED' || p.status === 'published' || p.status === 'active';
+        return !isPub && !isStatementOccupied(p, occupiedSet);
+      });
 
-      const defaultSelection = exactMatch || nextAscendingFree || fallbackLowestFree;
+      const selected = exactMatch || nextAscendingFree || fallbackLowestFree || null;
 
-      if (defaultSelection) {
-        setSelectedStatementId((prev) => {
-          if (prev) {
-            const currentSelected = options.find((o) => o.statementId === prev);
-            if (currentSelected && currentSelected.isFree) {
-              return prev;
-            }
-          }
-          form.setFieldsValue({ selectedStatementId: defaultSelection.statementId });
-          return defaultSelection.statementId;
+      if (selected) {
+        const ord = selected.order !== undefined && selected.order !== null ? selected.order : (selected.sequence || 1);
+        setAutoAssignedProblem({
+          statementId: selected.statementId,
+          orderNum: ord,
+          title: selected.title || 'Untitled Problem',
+          category: selected.category || 'General',
         });
+      } else {
+        setAutoAssignedProblem(null);
       }
     } catch (err) {
       console.warn('[AddTeamModal] Error loading problem statements:', err);
+      setAutoAssignedProblem(null);
     } finally {
       setLoadingProblems(false);
     }
   };
 
-  const handleLeaderNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLeaderNameChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setErrorMessage(null);
-    if (val.trim()) {
-      setPreviewUsername(generateLocalUsername(val));
-    } else {
-      setPreviewUsername('');
-    }
+    const nextId = await fetchPreview(val);
+    await fetchProblemStatements(nextId);
   };
 
   const handleFinish = async (values: any) => {
-    if (!values.selectedStatementId) {
-      setErrorMessage('Please select a FREE problem statement before creating the team.');
-      return;
-    }
-
     setLoading(true);
     setErrorMessage(null);
 
@@ -235,7 +188,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
         teamName: values.teamName.trim(),
         leaderName: values.leaderName.trim(),
         password: values.password,
-        selectedStatementId: values.selectedStatementId,
+        selectedStatementId: autoAssignedProblem?.statementId || undefined,
       });
 
       setCreatedSuccessData({
@@ -252,9 +205,8 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
       if (onSuccess) onSuccess(res);
 
       form.resetFields();
-      setSelectedStatementId(null);
-      fetchPreview();
-      fetchProblemStatements();
+      const nextId = await fetchPreview();
+      await fetchProblemStatements(nextId);
     } catch (err: any) {
       const safeMsg = formatTeamCreationError(err);
       setErrorMessage(safeMsg);
@@ -263,28 +215,6 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
       setLoading(false);
     }
   };
-
-  const counts = useMemo(() => {
-    const total = problemOptions.length;
-    const free = problemOptions.filter((p) => p.isFree).length;
-    const assigned = total - free;
-    return { total, free, assigned };
-  }, [problemOptions]);
-
-  const displayedOptions = useMemo(() => {
-    if (statusFilter === 'FREE') {
-      return problemOptions.filter((p) => p.isFree);
-    }
-    if (statusFilter === 'ASSIGNED') {
-      return problemOptions.filter((p) => !p.isFree);
-    }
-    return problemOptions;
-  }, [problemOptions, statusFilter]);
-
-  const selectedProblem = useMemo(() => {
-    if (!selectedStatementId) return null;
-    return problemOptions.find((p) => p.statementId === selectedStatementId) || null;
-  }, [selectedStatementId, problemOptions]);
 
   return (
     <Modal
@@ -299,7 +229,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
       footer={null}
       destroyOnClose
       centered
-      width={600}
+      width={580}
     >
       {createdSuccessData ? (
         <div style={{ padding: '16px 0', textAlign: 'center' }}>
@@ -324,7 +254,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
             ✓ Team account created successfully
           </Title>
           <Paragraph type="secondary" style={{ marginBottom: 20 }}>
-            The team account and problem statement assignment have been provisioned in Firestore.
+            The team account and auto-assigned problem statement have been permanently saved in Firestore.
           </Paragraph>
 
           <div
@@ -359,19 +289,9 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
                 </Tag>
               </div>
             )}
-            {createdSuccessData.assignedStatementTitle && (
-              <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between' }}>
-                <Text type="secondary">Problem Title:</Text>
-                <Text strong style={{ textAlign: 'right', maxWidth: 300 }}>{createdSuccessData.assignedStatementTitle}</Text>
-              </div>
-            )}
-            <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <Text type="secondary">Team Name:</Text>
               <Text strong>{createdSuccessData.teamName}</Text>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <Text type="secondary">Leader Name:</Text>
-              <Text>{createdSuccessData.leaderName}</Text>
             </div>
           </div>
 
@@ -387,7 +307,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
       ) : (
         <div>
           <Paragraph type="secondary" style={{ fontSize: '13px', marginBottom: 20 }}>
-            Enter Team Name, Leader Name, select a FREE Problem Statement, and set a Password.
+            Enter Team Name, Leader Name, and Password. The Problem Statement is assigned automatically based on team sequence.
           </Paragraph>
 
           {errorMessage && (
@@ -402,7 +322,6 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
           )}
 
           <Form form={form} layout="vertical" onFinish={handleFinish} requiredMark={false} size="large">
-            {/* Team Name */}
             <Form.Item
               name="teamName"
               label={<Text strong style={{ fontSize: '13px' }}>Team Name</Text>}
@@ -415,7 +334,6 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
               />
             </Form.Item>
 
-            {/* Leader Name */}
             <Form.Item
               name="leaderName"
               label={<Text strong style={{ fontSize: '13px' }}>Leader Name</Text>}
@@ -429,7 +347,6 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
               />
             </Form.Item>
 
-            {/* Generated Fields (Auto) */}
             <Row gutter={12} style={{ marginBottom: 16 }}>
               <Col span={12}>
                 <div style={{ background: '#f1f5f9', padding: '10px 14px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
@@ -441,7 +358,6 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
                   </Tag>
                 </div>
               </Col>
-
               <Col span={12}>
                 <div style={{ background: '#f1f5f9', padding: '10px 14px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
                   <Text type="secondary" style={{ fontSize: '11px', textTransform: 'uppercase', display: 'block', fontWeight: 600 }}>
@@ -454,101 +370,72 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
               </Col>
             </Row>
 
-            {/* ASSIGN PROBLEM STATEMENT SECTION */}
-            <div style={{ background: '#f8fafc', padding: 14, borderRadius: 10, border: '1px solid #e2e8f0', marginBottom: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <Space size={6}>
-                  <BookOutlined style={{ color: '#1677ff' }} />
-                  <Text strong style={{ fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    Assign Problem Statement
+            <div
+              style={{
+                background: '#f8fafc',
+                padding: 16,
+                borderRadius: 12,
+                border: '1px solid #e2e8f0',
+                marginBottom: 16,
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <Space size={8}>
+                  <BookOutlined style={{ color: '#1677ff', fontSize: '15px' }} />
+                  <Text strong style={{ fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#1e293b' }}>
+                    Auto-Assigned Problem Statement
                   </Text>
-                  <Text type="danger" style={{ fontWeight: 700 }}>*</Text>
                 </Space>
-
-                <Segmented
-                  size="small"
-                  value={statusFilter}
-                  onChange={(val) => setStatusFilter(val as any)}
-                  options={[
-                    { label: `All (${counts.total})`, value: 'ALL' },
-                    { label: `FREE (${counts.free})`, value: 'FREE' },
-                    { label: `Assigned (${counts.assigned})`, value: 'ASSIGNED' },
-                  ]}
-                />
+                <Tag color="cyan" style={{ fontWeight: 700, fontSize: '11px', margin: 0 }}>
+                  Automatic / Sequential
+                </Tag>
               </div>
 
-              <Form.Item
-                name="selectedStatementId"
-                style={{ marginBottom: 0 }}
-                rules={[{ required: true, message: 'Please select a FREE problem statement before creating the team.' }]}
-              >
-                <Select
-                  showSearch
-                  placeholder="Select a FREE problem statement..."
-                  loading={loadingProblems}
-                  disabled={loading}
-                  onChange={(val) => setSelectedStatementId(val)}
-                  filterOption={(input, option) => {
-                    if (!option) return false;
-                    const searchStr = String((option as any).searchValue || '').toLowerCase();
-                    return searchStr.includes(input.toLowerCase());
-                  }}
-                  style={{ width: '100%' }}
-                >
-                  {displayedOptions.map((p) => {
-                    const isFree = p.isFree;
-                    let tagColor = 'green';
-                    if (p.statusType === 'ASSIGNED') tagColor = 'purple';
-                    if (p.statusType === 'PUBLISHED') tagColor = 'gold';
-
-                    return (
-                      <Select.Option
-                        key={p.statementId}
-                        value={p.statementId}
-                        disabled={!isFree}
-                        searchValue={`Problem #${p.orderNum} ${p.statementId} ${p.title} ${p.category}`}
-                      >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', opacity: isFree ? 1 : 0.6 }}>
-                          <Space size={8} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '75%' }}>
-                            <Tag color="blue" style={{ fontWeight: 800, fontSize: '11px', margin: 0 }}>
-                              #{p.orderNum}
-                            </Tag>
-                            <span style={{ fontFamily: 'monospace', fontWeight: 600, color: '#1d39c4', fontSize: '12px' }}>
-                              {p.statementId}
-                            </span>
-                            <span style={{ fontWeight: 600, color: '#1e293b', fontSize: '13px' }}>
-                              {p.title}
-                            </span>
-                          </Space>
-                          <Tag color={tagColor} style={{ fontSize: '10px', fontWeight: 700, margin: 0 }}>
-                            {p.statusLabel}
-                          </Tag>
-                        </div>
-                      </Select.Option>
-                    );
-                  })}
-                </Select>
-              </Form.Item>
-
-              {/* Selected Problem Details Box */}
-              {selectedProblem && (
-                <div style={{ background: '#f0fdf4', padding: '10px 14px', borderRadius: 8, border: '1px solid #bbf7d0', marginTop: 10 }}>
-                  <Text type="secondary" style={{ fontSize: '11px', textTransform: 'uppercase', display: 'block', fontWeight: 600, color: '#166534' }}>
-                    Selected Problem Statement (Will be Assigned)
-                  </Text>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-                    <Tag color="green" style={{ fontSize: '13px', fontWeight: 800, margin: 0 }}>
-                      Problem #{selectedProblem.orderNum} ({selectedProblem.statementId})
-                    </Tag>
-                    <Text ellipsis strong style={{ fontSize: '13px', color: '#14532d', maxWidth: 320 }}>
-                      {selectedProblem.title}
-                    </Text>
-                  </div>
+              {loadingProblems ? (
+                <div style={{ padding: '12px 0', textAlign: 'center', color: '#64748b', fontSize: '13px' }}>
+                  Loading auto-assigned problem statement...
                 </div>
+              ) : autoAssignedProblem ? (
+                <div
+                  style={{
+                    background: '#ffffff',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: 8,
+                    padding: '12px 14px',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                    <Space size={8}>
+                      <Tag color="blue" style={{ fontSize: '12px', fontWeight: 800, margin: 0 }}>
+                        Problem #{autoAssignedProblem.orderNum}
+                      </Tag>
+                      <Text code style={{ fontSize: '12px', fontWeight: 700, color: '#1d39c4' }}>
+                        {autoAssignedProblem.statementId}
+                      </Text>
+                    </Space>
+                    <Tag color="green" style={{ fontSize: '11px', fontWeight: 700, margin: 0 }}>
+                      FREE
+                    </Tag>
+                  </div>
+                  <Text strong style={{ fontSize: '13px', color: '#0f172a', display: 'block', lineHeight: 1.4 }}>
+                    {autoAssignedProblem.title}
+                  </Text>
+                  {autoAssignedProblem.category && (
+                    <Text type="secondary" style={{ fontSize: '11px', marginTop: 4, display: 'block' }}>
+                      Category: {autoAssignedProblem.category}
+                    </Text>
+                  )}
+                </div>
+              ) : (
+                <Alert
+                  type="warning"
+                  message="No unassigned problem statements are available in the catalog."
+                  showIcon
+                  style={{ borderRadius: 8, fontSize: '12px' }}
+                />
               )}
             </div>
 
-            {/* Password */}
             <Form.Item
               name="password"
               label={<Text strong style={{ fontSize: '13px' }}>Team Password</Text>}
@@ -577,7 +464,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
                 type="primary"
                 htmlType="submit"
                 loading={loading}
-                disabled={loading || !selectedStatementId || !selectedProblem?.isFree}
+                disabled={loading || loadingProblems || !autoAssignedProblem}
                 icon={<UserAddOutlined />}
                 style={{ background: '#1677ff', borderRadius: 8, fontWeight: 700 }}
               >

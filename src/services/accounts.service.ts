@@ -430,6 +430,18 @@ export async function createTeamAccount(input: CreateAccountInput): Promise<Crea
       } else if (!assignResult.success) {
         throw new Error(assignResult.message || 'This problem statement has already been assigned. Please select another FREE problem statement.');
       }
+    } else {
+      const assignResult = await assignNextSequentialProblemToTeam(teamId, teamName, {
+        uid: auth.currentUser?.uid,
+        email: auth.currentUser?.email,
+      });
+      if (assignResult.success && assignResult.assigned) {
+        assignedStatementId = assignResult.statementId || null;
+        assignedStatementTitle = assignResult.statementTitle || null;
+        assignedProblemSequence = assignResult.problemSequence || null;
+      } else if (!assignResult.success) {
+        throw new Error(assignResult.message || 'No unassigned problem statements are available.');
+      }
     }
 
     return {

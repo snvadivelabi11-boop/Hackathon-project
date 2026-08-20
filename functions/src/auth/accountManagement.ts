@@ -370,13 +370,63 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
       { teamName: trimmedTeamName, leaderName: trimmedLeaderName, username: normalizedUsername }
     );
 
-    // 8. Explicit manual problem assignment if requested by Admin
+    // 8. Problem statement assignment (sequential auto-assignment or specified)
     let assignedStatementId: string | null = null;
     let assignedStatementTitle: string | null = null;
     let assignedProblemSequence: number | null = null;
 
-    if (selectedStatementId && String(selectedStatementId).trim().length > 0) {
-      const targetStatementId = String(selectedStatementId).trim();
+    let targetStatementId = selectedStatementId && String(selectedStatementId).trim().length > 0
+      ? String(selectedStatementId).trim()
+      : null;
+
+    const occupiedIds = await getComprehensiveOccupiedStatementIdsBackend(db, allocatedTeamId);
+
+    if (!targetStatementId) {
+      // Automatic sequential selection matching team sequence number or next free problem
+      const allPsSnap = await db.collection('problemStatements').get();
+      const allPsList: any[] = [];
+      allPsSnap.forEach((d) => allPsList.push({ statementId: d.id, ...d.data() }));
+
+      allPsList.sort((a, b) => {
+        const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence !== undefined && a.sequence !== null ? a.sequence : 0);
+        const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence !== undefined && b.sequence !== null ? b.sequence : 0);
+        if (ordA !== ordB) return ordA - ordB;
+        return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
+      });
+
+      const numMatch = allocatedTeamId.match(/\d+/);
+      const targetTeamNum = numMatch ? parseInt(numMatch[0], 10) : nextNum;
+
+      // 1. Exact match
+      let chosenPs = allPsList.find((p) => {
+        const ord = p.order !== undefined && p.order !== null ? p.order : (p.sequence || 1);
+        const isPub = p.status === 'published' || p.status === 'PUBLISHED' || p.status === 'active';
+        return ord === targetTeamNum && !isPub && !isStatementOccupiedBackend(p, occupiedIds, allocatedTeamId);
+      });
+
+      // 2. Next ascending free
+      if (!chosenPs) {
+        chosenPs = allPsList.find((p) => {
+          const ord = p.order !== undefined && p.order !== null ? p.order : (p.sequence || 1);
+          const isPub = p.status === 'published' || p.status === 'PUBLISHED' || p.status === 'active';
+          return ord >= targetTeamNum && !isPub && !isStatementOccupiedBackend(p, occupiedIds, allocatedTeamId);
+        });
+      }
+
+      // 3. Fallback lowest free
+      if (!chosenPs) {
+        chosenPs = allPsList.find((p) => {
+          const isPub = p.status === 'published' || p.status === 'PUBLISHED' || p.status === 'active';
+          return !isPub && !isStatementOccupiedBackend(p, occupiedIds, allocatedTeamId);
+        });
+      }
+
+      if (chosenPs) {
+        targetStatementId = chosenPs.statementId;
+      }
+    }
+
+    if (targetStatementId) {
       const psRef = db.collection('problemStatements').doc(targetStatementId);
       const psSnap = await psRef.get();
 
@@ -385,7 +435,6 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
       }
 
       const psData = psSnap.data() as any;
-      const occupiedIds = await getComprehensiveOccupiedStatementIdsBackend(db, allocatedTeamId);
 
       if (isStatementOccupiedBackend(psData, occupiedIds, allocatedTeamId)) {
         throw new functions.https.HttpsError('already-exists', 'This problem statement has already been assigned. Please select another FREE problem statement.');
@@ -422,7 +471,7 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
         sourceFileName: psData.sourceFileName || '',
         assignedAt: nowIso,
         publishedAt: isPublished ? nowIso : null,
-        assignedBy: context.auth!.token.email || context.auth!.uid || 'admin_manual_assignment',
+        assignedBy: context.auth!.token.email || context.auth!.uid || 'system_auto_assignment',
         status: isPublished ? 'PUBLISHED' : 'DRAFT',
       }, { merge: true });
 
@@ -438,8 +487,12 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
         assignedProblemId: psData.statementId || targetStatementId,
         assignedProblemCode: psData.statementId || targetStatementId,
         assignedProblemOrder: seq,
+        problemStatementId: psData.statementId || targetStatementId,
+        problemStatementCode: psData.statementId || targetStatementId,
+        problemStatementOrder: seq,
         assignmentStatus: 'ASSIGNED',
         assignmentLocked: true,
+        assignmentSource: 'AUTO',
         assignedAt: nowIso,
         updatedAt: now,
       });
