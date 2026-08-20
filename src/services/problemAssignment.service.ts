@@ -863,10 +863,8 @@ export function isStatementOccupied(statement: ProblemStatement, occupiedSet: Se
 }
 
 /**
- * @deprecated — "First free problem" logic has been removed.
- * Returns summary counts only. Does NOT find or suggest a "next available" problem.
- * The deterministic rule TEAM<N> → Problem #N is the only assignment strategy.
- * Kept for backward compatibility with any import that references this function.
+ * Calculates the next available unassigned Problem Statement in sequential order (1..N).
+ * Pure query helper for previewing in the Add Team modal or UI without writing to Firestore.
  */
 export async function getNextAvailableProblemStatement(
   knownStatements?: ProblemStatement[],
@@ -891,19 +889,29 @@ export async function getNextAvailableProblemStatement(
       return { nextProblem: null, totalStatements: 0, totalAssigned: 0, totalAvailable: 0 };
     }
 
+    // Sort deterministically by Admin Order (1..N), sequence, and numeric statementId
+    const sorted = [...statements].sort((a, b) => {
+      const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence !== undefined && a.sequence !== null ? a.sequence : 0);
+      const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence !== undefined && b.sequence !== null ? b.sequence : 0);
+      if (ordA !== ordB) return ordA - ordB;
+      return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
+    });
+
     const occupiedIds = await getComprehensiveOccupiedStatementIds(excludeTeamId);
+
+    // Find the first unassigned problem statement in sequential order
+    const nextAvailable = sorted.find((st) => !isStatementOccupied(st, occupiedIds, excludeTeamId)) || null;
+
     let assignedCount = 0;
-    statements.forEach((st) => {
+    sorted.forEach((st) => {
       if (isStatementOccupied(st, occupiedIds, excludeTeamId)) assignedCount++;
     });
 
-    const totalAvailable = Math.max(0, statements.length - assignedCount);
+    const totalAvailable = Math.max(0, sorted.length - assignedCount);
 
-    // IMPORTANT: Returns null for nextProblem — no first-free fallback.
-    // Use assignNextSequentialProblemToTeam() with deterministic TEAM<N> → Problem #N instead.
     return {
-      nextProblem: null,
-      totalStatements: statements.length,
+      nextProblem: nextAvailable,
+      totalStatements: sorted.length,
       totalAssigned: assignedCount,
       totalAvailable,
     };
@@ -914,16 +922,13 @@ export async function getNextAvailableProblemStatement(
 }
 
 /**
- * Automatically assigns existing unassigned Teams to their deterministic Problem Statements
+ * Automatically assigns existing unassigned Teams to the first available Problem Statements
  * after a successful Problem Statement import/upload.
- *
- * RULE: TEAM<N> → Problem with order === N (permanent, one-to-one).
  *
  * For each existing team:
  *   - If team already has a persisted assignment → SKIP (preserve existing).
- *   - If Problem #N exists and is unassigned → ASSIGN atomically.
- *   - If Problem #N exists but is assigned to another team → LOG CONFLICT (do not reassign).
- *   - If Problem #N does not exist → SKIP (no problem for this team yet).
+ *   - If unassigned → Finds the first available Problem Statement in problem order and ASSIGNS atomically.
+ *   - If all problems occupied → SKIPS safely.
  *
  * Uses individual Firestore transactions per team to stay within limits and allow partial success.
  */
@@ -971,52 +976,26 @@ export async function assignExistingTeamsAfterImport(
       return result;
     }
 
-    // 3. Build problem-by-order lookup (permanent order field)
-    const problemByOrder = new Map<number, ProblemStatement>();
-    allStatements.forEach((ps) => {
-      const ord = ps.order !== undefined && ps.order !== null ? ps.order : (ps.sequence || 0);
-      if (ord > 0) {
-        problemByOrder.set(ord, ps);
-      }
-    });
-
-    // 4. Read existing assignments to check occupancy
+    // 3. Read existing assignments to check occupancy
     const assignSnap = await getDocs(collection(db, 'teamProblemAssignments')).catch(() => null);
     const existingAssignments = new Set<string>();
-    const assignedStatementIds = new Set<string>();
     if (assignSnap) {
       assignSnap.forEach((d) => {
         existingAssignments.add(d.id); // teamId
-        const data = d.data();
-        if (data.statementId) assignedStatementIds.add(data.statementId);
       });
     }
 
-    // Also check problem-level assignedTeamId fields
-    allStatements.forEach((ps) => {
-      if (ps.assignedTeamId && ps.assignedTeamId.trim().length > 0) {
-        assignedStatementIds.add(ps.statementId);
-      }
-    });
-
     result.totalTeams = allTeams.length;
 
-    // 5. Sort teams by numeric sequence for deterministic processing
+    // 4. Sort teams by numeric sequence for deterministic processing
     const sortedTeams = [...allTeams].sort((a, b) => {
       const numA = parseInt(a.teamId.match(/\d+/)?.[0] || '0', 10);
       const numB = parseInt(b.teamId.match(/\d+/)?.[0] || '0', 10);
       return numA - numB;
     });
 
-    // 6. Process each team
+    // 5. Process each team
     for (const team of sortedTeams) {
-      const numMatch = team.teamId.match(/\d+/);
-      if (!numMatch) {
-        result.skipped++;
-        continue;
-      }
-      const teamNum = parseInt(numMatch[0], 10);
-
       // Check if team already has any persisted assignment
       const hasExistingAssignment =
         existingAssignments.has(team.teamId) ||
@@ -1030,24 +1009,7 @@ export async function assignExistingTeamsAfterImport(
         continue;
       }
 
-      // Find the exact problem for this team's sequence number
-      const targetProblem = problemByOrder.get(teamNum);
-      if (!targetProblem) {
-        // No problem exists for this team number — skip silently
-        result.skipped++;
-        continue;
-      }
-
-      // Check if the target problem is already assigned to another team
-      if (assignedStatementIds.has(targetProblem.statementId)) {
-        result.conflicts.push(
-          `${team.teamId} requires Problem #${teamNum} (${targetProblem.statementId}), but it is already assigned to another team.`
-        );
-        result.skipped++;
-        continue;
-      }
-
-      // Assign using the existing atomic transaction function
+      // Assign first available problem using the atomic transaction function
       try {
         const assignResult = await assignNextSequentialProblemToTeam(
           team.teamId,
@@ -1057,9 +1019,7 @@ export async function assignExistingTeamsAfterImport(
 
         if (assignResult.success && assignResult.assigned) {
           result.assigned++;
-          // Mark as occupied for subsequent iterations
           existingAssignments.add(team.teamId);
-          assignedStatementIds.add(targetProblem.statementId);
         } else if (assignResult.alreadyAssigned) {
           result.alreadyAssigned++;
           existingAssignments.add(team.teamId);
@@ -1088,14 +1048,14 @@ export async function assignExistingTeamsAfterImport(
 }
 
 /**
- * Assigns the deterministic Problem Statement matching TEAM<N> → Problem #N to a Team.
- *
+ * Assigns the first available unassigned Problem Statement in sequential order (1..N) to a Team.
+ * 
  * Rules:
- * 1. TEAM<N> → Problem Statement where order === N (deterministic, no fallback).
- * 2. EXISTING TEAM → If teamId already has an assignment, keeps it and returns early (Idempotent).
- * 3. NO FALLBACK → If Problem #N does not exist or is occupied, fails safely. Never assigns another problem.
- * 4. ATOMIC / CONCURRENCY SAFE → Uses Firestore runTransaction to prevent race conditions.
- * 5. METADATA PRESERVED → Preserves all AI analysis, category, difficulty, organization, department, and prompt fields.
+ * 1. FIRST AVAILABLE -> Finds the first genuinely available unassigned Problem Statement by order.
+ * 2. EXISTING TEAM -> If teamId already has an assignment, keeps it and returns early (Idempotent).
+ * 3. NO DUPLICATES -> Assigned problem statements are strictly skipped so each problem gets at most 1 team.
+ * 4. ATOMIC / CONCURRENCY SAFE -> Uses Firestore runTransaction to prevent race conditions.
+ * 5. METADATA PRESERVED -> Preserves all AI analysis, category, difficulty, organization, department, and prompt fields.
  */
 export async function assignNextSequentialProblemToTeam(
   teamId: string,
@@ -1144,9 +1104,9 @@ export async function assignNextSequentialProblemToTeam(
   const psSnap = await getDocs(collection(db, 'problemStatements'));
   if (psSnap.empty) {
     return {
-      success: true,
+      success: false,
       assigned: false,
-      message: 'No problem statements found in catalog. Team created without default problem.',
+      message: 'No available Problem Statements. Please add another Problem Statement before creating a new Team.',
     };
   }
 
@@ -1197,21 +1157,14 @@ export async function assignNextSequentialProblemToTeam(
         };
       }
 
-      // Determine target team number from teamId (e.g. TEAM005 -> 5, TEAM127 -> 127)
-      const numMatch = teamId.match(/\d+/);
-      const targetTeamNum = numMatch ? parseInt(numMatch[0], 10) : 1;
-
-      // Find the exact Problem Statement matching the target team sequence number
-      const candidate = allStatements.find((c) => {
-        const ord = c.order !== undefined && c.order !== null ? c.order : (c.sequence || 1);
-        return ord === targetTeamNum;
-      });
+      // Find the FIRST available unassigned Problem Statement
+      const candidate = allStatements.find((c) => !isStatementOccupied(c, occupiedSet, teamId));
 
       if (!candidate) {
         return {
           success: false,
           assigned: false,
-          message: `No Problem Statement exists for Team #${targetTeamNum}. Team creation was not completed.`,
+          message: 'No available Problem Statements. Please add another Problem Statement before creating a new Team.',
         };
       }
 
@@ -1221,7 +1174,7 @@ export async function assignNextSequentialProblemToTeam(
         return {
           success: false,
           assigned: false,
-          message: `No Problem Statement exists for Team #${targetTeamNum}. Team creation was not completed.`,
+          message: 'No available Problem Statements. Please add another Problem Statement before creating a new Team.',
         };
       }
 
@@ -1230,7 +1183,7 @@ export async function assignNextSequentialProblemToTeam(
         return {
           success: false,
           assigned: false,
-          message: `Problem #${targetTeamNum} is already assigned. Team creation was not completed.`,
+          message: 'This problem statement has already been assigned. Please select another FREE problem statement.',
         };
       }
 
@@ -1335,7 +1288,6 @@ export async function assignNextSequentialProblemToTeam(
     return result;
   } catch (txError: any) {
     console.error('[ProblemAssignment] assignNextSequentialProblemToTeam transaction error:', txError);
-    // Graceful fallback: return informative message without crashing team creation
     return {
       success: false,
       assigned: false,
@@ -1343,6 +1295,7 @@ export async function assignNextSequentialProblemToTeam(
     };
   }
 }
+
 
 /**
  * Explicitly assigns a SPECIFIC, Admin-selected Problem Statement to a Team.

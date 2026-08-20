@@ -370,43 +370,42 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
       { teamName: trimmedTeamName, leaderName: trimmedLeaderName, username: normalizedUsername }
     );
 
-    // 8. Problem statement assignment (deterministic auto-assignment: TEAM<N> → Problem #N)
-    // selectedStatementId is ignored — no manual selection during normal team creation.
+    // 8. Problem statement assignment (first available auto-assignment or specified)
     let assignedStatementId: string | null = null;
     let assignedStatementTitle: string | null = null;
     let assignedProblemSequence: number | null = null;
 
+    let targetStatementId = selectedStatementId && String(selectedStatementId).trim().length > 0
+      ? String(selectedStatementId).trim()
+      : null;
+
     const occupiedIds = await getComprehensiveOccupiedStatementIdsBackend(db, allocatedTeamId);
 
-    // Automatic sequential selection matching team sequence number
-    const allPsSnap = await db.collection('problemStatements').get();
-    const allPsList: any[] = [];
-    allPsSnap.forEach((d) => allPsList.push({ statementId: d.id, ...d.data() }));
+    if (!targetStatementId) {
+      // Automatic selection finding the FIRST available unassigned Problem Statement in problem order
+      const allPsSnap = await db.collection('problemStatements').get();
+      const allPsList: any[] = [];
+      allPsSnap.forEach((d) => allPsList.push({ statementId: d.id, ...d.data() }));
 
-    allPsList.sort((a, b) => {
-      const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence !== undefined && a.sequence !== null ? a.sequence : 0);
-      const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence !== undefined && b.sequence !== null ? b.sequence : 0);
-      if (ordA !== ordB) return ordA - ordB;
-      return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
-    });
+      allPsList.sort((a, b) => {
+        const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence !== undefined && a.sequence !== null ? a.sequence : 0);
+        const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence !== undefined && b.sequence !== null ? b.sequence : 0);
+        if (ordA !== ordB) return ordA - ordB;
+        return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
+      });
 
-    const numMatch = allocatedTeamId.match(/\d+/);
-    const targetTeamNum = numMatch ? parseInt(numMatch[0], 10) : nextNum;
+      // Find the first unassigned / available Problem Statement
+      const chosenPs = allPsList.find((p) => !isStatementOccupiedBackend(p, occupiedIds, allocatedTeamId));
 
-    // Find the exact Problem Statement matching the target team sequence number
-    const chosenPs = allPsList.find((p) => {
-      const ord = p.order !== undefined && p.order !== null ? p.order : (p.sequence || 1);
-      return ord === targetTeamNum;
-    });
+      if (!chosenPs) {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          'No available Problem Statements. Please add another Problem Statement before creating a new Team.'
+        );
+      }
 
-    if (!chosenPs) {
-      throw new functions.https.HttpsError(
-        'not-found',
-        `No Problem Statement exists for Team #${targetTeamNum}. Team creation was not completed.`
-      );
+      targetStatementId = chosenPs.statementId;
     }
-
-    const targetStatementId = chosenPs.statementId;
 
     if (targetStatementId) {
       const psRef = db.collection('problemStatements').doc(targetStatementId);

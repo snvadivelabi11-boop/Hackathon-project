@@ -21,7 +21,9 @@ import { db, auth, functions, isFirebaseConfigured, firebaseConfig } from '../fi
 import { Team, UserProfile } from '../types';
 
 import {
+  getNextAvailableProblemStatement,
   assignNextSequentialProblemToTeam,
+  assignSpecificProblemToTeam,
 } from './problemAssignment.service';
 
 export interface CreateAccountInput {
@@ -196,41 +198,33 @@ const USERNAME_BLACKLIST = new Set([
 ]);
 
 /**
- * Ensures username uniqueness in Firestore users and teams collections
+ * Generates next unique username.
  */
 export async function findUniqueUsername(baseUsername: string): Promise<string> {
-  const safeBase = USERNAME_BLACKLIST.has(baseUsername) ? `${baseUsername}_team` : baseUsername;
-  let candidate = safeBase;
+  let candidate = baseUsername;
   let suffix = 1;
 
   while (true) {
-    const [userCheck, teamCheck] = await Promise.all([
-      getDocs(query(collection(db, 'users'), where('username', '==', candidate))),
-      getDocs(query(collection(db, 'teams'), where('username', '==', candidate))),
-    ]);
-
-    if (userCheck.empty && teamCheck.empty) {
-      return candidate;
-    }
-
-    candidate = `${baseUsername}${suffix}`;
+    const q = query(collection(db, 'users'), where('username', '==', candidate));
+    const snap = await getDocs(q);
+    if (snap.empty) return candidate;
     suffix++;
+    candidate = `${baseUsername}${suffix}`;
   }
 }
 
 /**
- * Calculates the next sequential Team ID (TEAM001, TEAM002... TEAM100) from Firestore
+ * Calculates next sequential Team ID.
  */
 async function calculateNextSequentialTeamId(): Promise<{ nextNum: number; teamId: string }> {
   try {
     const teamsSnap = await getDocs(collection(db, 'teams'));
     let max = 0;
-
-    teamsSnap.forEach((doc) => {
-      const match = doc.id.match(/^TEAM(\d+)$/i);
+    teamsSnap.forEach((d) => {
+      const match = d.id.match(/\d+/);
       if (match) {
-        const n = parseInt(match[1], 10);
-        if (!isNaN(n) && n > max) max = n;
+        const num = parseInt(match[0], 10);
+        if (num > max) max = num;
       }
     });
 
@@ -245,6 +239,7 @@ async function calculateNextSequentialTeamId(): Promise<{ nextNum: number; teamI
 
 /**
  * Previews the next sequential Team ID and generated username for the Admin UI.
+ * Also retrieves the next available Problem Statement in sequential order.
  */
 export async function getNextTeamPreview(leaderName?: string): Promise<NextTeamPreview> {
   const { nextNum, teamId } = await calculateNextSequentialTeamId();
@@ -259,18 +254,32 @@ export async function getNextTeamPreview(leaderName?: string): Promise<NextTeamP
     }
   }
 
+  let defaultProblemStatement: NextTeamPreview['defaultProblemStatement'] = null;
+  try {
+    const { nextProblem } = await getNextAvailableProblemStatement();
+    if (nextProblem) {
+      defaultProblemStatement = {
+        statementId: nextProblem.statementId,
+        sequence: nextProblem.order ?? nextProblem.sequence ?? 1,
+        title: nextProblem.title,
+      };
+    }
+  } catch (e) {
+    console.warn('[AccountsService] Could not fetch next available problem statement preview:', e);
+  }
+
   return {
     nextTeamNumber: nextNum,
     generatedTeamId: teamId,
     generatedUsername: generatedUsername || (leaderName ? generateLocalUsername(leaderName) : ''),
-    defaultProblemStatement: null,
+    defaultProblemStatement,
   };
 }
 
 /**
  * Creates a new team account with sequential Team ID (TEAM001..TEAM100), unique username,
  * Firebase Authentication credentials, and Firestore documents.
- * Explicitly assigns the Admin-selected Problem Statement if provided.
+ * Automatically assigns the first available Problem Statement (or specific statement if Admin selected).
  */
 export async function createTeamAccount(input: CreateAccountInput): Promise<CreateAccountResult> {
   const teamName = input.teamName.trim();
@@ -289,6 +298,7 @@ export async function createTeamAccount(input: CreateAccountInput): Promise<Crea
       teamName,
       leaderName,
       password,
+      selectedStatementId,
     });
     if (response.data?.success) {
       return response.data;
@@ -296,7 +306,7 @@ export async function createTeamAccount(input: CreateAccountInput): Promise<Crea
   } catch (cloudFnError: any) {
     console.warn('[AccountsService] Cloud Function creation unavailable/failed, executing direct Firebase creation:', cloudFnError);
     // If it was a validation error from cloud function, rethrow with friendly message
-    if (cloudFnError.code === 'invalid-argument' || cloudFnError.code === 'already-exists') {
+    if (cloudFnError.code === 'invalid-argument' || cloudFnError.code === 'already-exists' || cloudFnError.code === 'failed-precondition') {
       throw new Error(formatTeamCreationError(cloudFnError));
     }
   }
@@ -400,22 +410,35 @@ export async function createTeamAccount(input: CreateAccountInput): Promise<Crea
       metadata: { teamName, leaderName, username, teamId, selectedStatementId },
     }).catch(() => {});
 
-    // Automatic deterministic problem assignment: TEAM<N> → Problem #N
-    // No manual selection — selectedStatementId is ignored for normal team creation.
+    // Automatic first-available problem assignment (or specific assignment if selected by Admin)
     let assignedStatementId: string | null = null;
     let assignedStatementTitle: string | null = null;
     let assignedProblemSequence: number | null = null;
 
-    const assignResult = await assignNextSequentialProblemToTeam(teamId, teamName, {
-      uid: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-    });
-    if (assignResult.success && assignResult.assigned) {
-      assignedStatementId = assignResult.statementId || null;
-      assignedStatementTitle = assignResult.statementTitle || null;
-      assignedProblemSequence = assignResult.problemSequence || null;
-    } else if (!assignResult.success) {
-      throw new Error(assignResult.message || 'Automatic problem assignment failed. No matching problem statement found for this team.');
+    if (selectedStatementId) {
+      const assignResult = await assignSpecificProblemToTeam(teamId, teamName, selectedStatementId, {
+        uid: auth.currentUser?.uid,
+        email: auth.currentUser?.email,
+      });
+      if (assignResult.success && assignResult.assigned) {
+        assignedStatementId = assignResult.statementId || null;
+        assignedStatementTitle = assignResult.statementTitle || null;
+        assignedProblemSequence = assignResult.problemSequence || null;
+      } else if (!assignResult.success) {
+        throw new Error(assignResult.message || 'This problem statement has already been assigned. Please select another FREE problem statement.');
+      }
+    } else {
+      const assignResult = await assignNextSequentialProblemToTeam(teamId, teamName, {
+        uid: auth.currentUser?.uid,
+        email: auth.currentUser?.email,
+      });
+      if (assignResult.success && assignResult.assigned) {
+        assignedStatementId = assignResult.statementId || null;
+        assignedStatementTitle = assignResult.statementTitle || null;
+        assignedProblemSequence = assignResult.problemSequence || null;
+      } else if (!assignResult.success) {
+        throw new Error(assignResult.message || 'No available Problem Statements. Please add another Problem Statement before creating a new Team.');
+      }
     }
 
     return {
