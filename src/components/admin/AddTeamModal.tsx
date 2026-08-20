@@ -25,6 +25,8 @@ import {
   generateLocalUsername,
   formatTeamCreationError,
 } from '../../services/accounts.service';
+import { subscribeToProblemStatements } from '../../services/problems.service';
+import { ProblemStatement } from '../../types';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -40,6 +42,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [previewTeamId, setPreviewTeamId] = useState<string>('TEAM001');
   const [previewUsername, setPreviewUsername] = useState<string>('');
+  const [statements, setStatements] = useState<ProblemStatement[]>([]);
 
   const [createdSuccessData, setCreatedSuccessData] = useState<{
     teamId: string;
@@ -57,6 +60,11 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
       setCreatedSuccessData(null);
       form.resetFields();
       fetchPreview();
+
+      const unsub = subscribeToProblemStatements((list) => {
+        setStatements(list);
+      });
+      return () => unsub();
     }
   }, [open]);
 
@@ -272,6 +280,46 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
                 </div>
               </Col>
             </Row>
+
+            {(() => {
+              const previewTeamSeq = parseInt(previewTeamId.match(/\d+/)?.[0] || '1', 10);
+              const matchingProblem = statements.find((p) => {
+                const ord = p.order !== undefined && p.order !== null ? p.order : (p.sequence || 1);
+                return ord === previewTeamSeq;
+              });
+
+              return (
+                <div style={{ background: '#f8fafc', padding: '12px 14px', borderRadius: 8, border: '1px solid #e2e8f0', marginBottom: 16 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <Text type="secondary" style={{ fontSize: '11px', textTransform: 'uppercase', fontWeight: 600 }}>
+                      Auto-Assigned Problem Statement (Read Only)
+                    </Text>
+                    <Tag color="purple" style={{ fontWeight: 800, fontSize: '10px', margin: 0 }}>
+                      AUTO ASSIGNED
+                    </Tag>
+                  </div>
+                  {matchingProblem ? (
+                    <div>
+                      <Space style={{ marginBottom: 4 }}>
+                        <Tag color="blue" style={{ fontWeight: 800, fontSize: '12px' }}>
+                          #{matchingProblem.order ?? matchingProblem.sequence ?? previewTeamSeq}
+                        </Tag>
+                        <Text strong style={{ fontSize: '13px', color: '#1e293b' }}>
+                          {matchingProblem.statementId}
+                        </Text>
+                      </Space>
+                      <div style={{ fontSize: '12px', color: '#475569', fontWeight: 500 }}>
+                        {matchingProblem.title}
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '12px', color: '#64748b' }}>
+                      Problem #{previewTeamSeq} will be automatically assigned upon creation
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             <Form.Item
               name="password"
