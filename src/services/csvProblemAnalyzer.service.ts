@@ -876,12 +876,14 @@ export function mergeAiAnalysisIntoQuestions(
   const resultMap = new Map<number, any>();
   problemsList.forEach((p) => resultMap.set(p.sequence, p));
 
+  const isRealAi = Boolean(aiResponse.aiSuccess);
+
   return questions.map((q) => {
     const aiItem = resultMap.get(q.sequence);
     if (!aiItem) return q;
 
     const notesParts = [q.validationNotes];
-    if (aiItem.issues && aiItem.issues.length > 0) {
+    if (isRealAi && aiItem.issues && aiItem.issues.length > 0) {
       notesParts.push(`AI Issues: ${aiItem.issues.join('; ')}`);
     }
 
@@ -890,7 +892,7 @@ export function mergeAiAnalysisIntoQuestions(
 
     return {
       ...q,
-      aiAnalyzed: true,
+      aiAnalyzed: isRealAi,
       order: aiItem.order || q.sequence,
       statementId: aiItem.problemStatementId || q.statementId,
       problemStatementId: aiItem.problemStatementId || q.problemStatementId || q.statementId,
@@ -900,13 +902,13 @@ export function mergeAiAnalysisIntoQuestions(
       team: q.team || aiItem.team,
       organization: q.organization || aiItem.organization,
       department: q.department || aiItem.department,
-      analysis: aiItem.analysis,
-      confidence: aiItem.confidence,
-      aiQualityScore: aiItem.qualityScore,
-      aiIssues: aiItem.issues,
-      aiSuggestions: aiItem.suggestions,
+      analysis: isRealAi ? aiItem.analysis : q.analysis,
+      confidence: isRealAi ? aiItem.confidence : q.confidence,
+      aiQualityScore: isRealAi ? aiItem.qualityScore : q.aiQualityScore,
+      aiIssues: isRealAi ? aiItem.issues : [],
+      aiSuggestions: isRealAi ? aiItem.suggestions : [],
       difficulty: q.difficulty || itemDifficulty,
-      validationNotes: notesParts.join(' | '),
+      validationNotes: notesParts.filter(Boolean).join(' | '),
     };
   });
 }

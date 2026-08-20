@@ -208,20 +208,20 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
             questions: enrichedQuestions,
             validItemsToSave: enrichedValid,
             aiAnalysisPerformed: true,
-            aiAnalysisSuccess: aiResponse.aiSuccess,
+            aiAnalysisSuccess: Boolean(aiResponse.aiSuccess),
             aiAnalysisError: aiResponse.aiError,
             aiModelUsed: aiResponse.aiModelUsed,
             summary: {
               ...localResult.summary,
-              aiAnalyzedCount: aiResponse.totalProblems,
+              aiAnalyzedCount: aiResponse.aiSuccess ? aiResponse.totalProblems : 0,
             },
           });
 
           setAiStatus(aiResponse.aiSuccess ? 'Completed' : 'Failed');
           if (aiResponse.aiSuccess) {
-            message.success(`AI Analysis complete: ${aiResponse.totalProblems} problem statements reviewed by Claude.`);
+            message.success(`AI Analysis Completed: ${aiResponse.totalProblems} problem statements reviewed by ${aiResponse.aiModelUsed || 'AI'}.`);
           } else {
-            message.warning(`AI Analysis encountered an issue (${aiResponse.aiError || 'OpenRouter connection/model error'}). Local fallback applied.`);
+            message.warning(`AI unavailable — local validation used (${aiResponse.aiError || 'OpenRouter credits/connection issue'}).`);
           }
         }
       } catch (err: any) {
@@ -234,6 +234,10 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
           aiAnalysisPerformed: true,
           aiAnalysisSuccess: false,
           aiAnalysisError: err.message,
+          summary: {
+            ...localResult.summary,
+            aiAnalyzedCount: 0,
+          },
         });
       } finally {
         setAiReviewing(false);
@@ -275,19 +279,19 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
           questions: enrichedQuestions,
           validItemsToSave: enrichedValid,
           aiAnalysisPerformed: true,
-          aiAnalysisSuccess: aiResponse.aiSuccess,
+          aiAnalysisSuccess: Boolean(aiResponse.aiSuccess),
           aiAnalysisError: aiResponse.aiError,
           aiModelUsed: aiResponse.aiModelUsed,
           summary: {
             ...analysisResult.summary,
-            aiAnalyzedCount: aiResponse.totalProblems,
+            aiAnalyzedCount: aiResponse.aiSuccess ? aiResponse.totalProblems : 0,
           },
         });
         setAiStatus(aiResponse.aiSuccess ? 'Completed' : 'Failed');
         if (aiResponse.aiSuccess) {
-          message.success('AI Quality Review completed successfully.');
+          message.success(`AI Analysis Completed: ${aiResponse.totalProblems} problem statements reviewed by ${aiResponse.aiModelUsed || 'AI'}.`);
         } else {
-          message.warning(`AI review failed (${aiResponse.aiError || 'OpenRouter error'}). Local fallback applied.`);
+          message.warning(`AI unavailable — local validation used (${aiResponse.aiError || 'OpenRouter error'}).`);
         }
       }
     } catch (err: any) {
@@ -725,9 +729,17 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
               <Space size="middle">
                 <Text strong>AI Analysis Status:</Text>
                 {aiStatus === 'Processing' && <Tag icon={<SyncOutlined spin />} color="processing">Processing</Tag>}
-                {aiStatus === 'Completed' && <Tag icon={<CheckCircleOutlined />} color="success">Completed ({analysisResult.aiModelUsed || 'Claude Sonnet'})</Tag>}
-                {aiStatus === 'Failed' && <Tag icon={<WarningOutlined />} color="error">AI Failed (Local Fallback Active)</Tag>}
-                {aiStatus === 'Idle' && <Tag color="default">Not Run</Tag>}
+                {analysisResult.aiAnalysisSuccess && (
+                  <Tag icon={<CheckCircleOutlined />} color="success">
+                    AI Analysis Completed ({analysisResult.aiModelUsed || 'AI Model'})
+                  </Tag>
+                )}
+                {!analysisResult.aiAnalysisSuccess && analysisResult.aiAnalysisPerformed && (
+                  <Tag icon={<WarningOutlined />} color="orange">
+                    AI unavailable — local validation used
+                  </Tag>
+                )}
+                {!analysisResult.aiAnalysisPerformed && <Tag color="default">Not Run</Tag>}
               </Space>
 
               <Space>
@@ -779,9 +791,9 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
                 message={
                   <Space>
                     <RobotOutlined style={{ color: '#7c3aed' }} />
-                    <span style={{ fontWeight: 700 }}>AI Problem Analysis Complete:</span>
+                    <span style={{ fontWeight: 700 }}>AI Problem Analysis Completed:</span>
                     <span>
-                      {analysisResult.validItemsToSave.length} problem statements analyzed and ordered with Claude AI. Ready to save as DRAFT.
+                      {analysisResult.validItemsToSave.length} problem statements analyzed and ordered with {analysisResult.aiModelUsed || 'AI'}. Ready to save as DRAFT.
                     </span>
                   </Space>
                 }
@@ -793,11 +805,11 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
 
             {analysisResult.aiAnalysisPerformed && !analysisResult.aiAnalysisSuccess && (
               <Alert
-                message="AI Analysis Failed — Local Fallback Active"
+                message="AI unavailable — local validation used"
                 description={
-                  analysisResult.aiAnalysisError
-                    ? `OpenRouter connection/model issue: ${analysisResult.aiAnalysisError}. Local parsing preserved all rows.`
-                    : 'OpenRouter connection/model issue encountered. Local parsing and validation preserved all rows.'
+                  analysisResult.aiAnalysisError?.includes('402') || analysisResult.aiAnalysisError?.includes('OPENROUTER_INSUFFICIENT_CREDITS')
+                    ? `OpenRouter account credits required: The configured OpenRouter model requires available credits. Deterministic local validation was applied and preserved all ${analysisResult.summary.validQuestions} problem statements with zero data loss.`
+                    : `OpenRouter AI service error (${analysisResult.aiAnalysisError || 'Service unavailable'}). Deterministic local validation was applied and preserved all ${analysisResult.summary.validQuestions} problem statements with zero data loss.`
                 }
                 type="warning"
                 showIcon

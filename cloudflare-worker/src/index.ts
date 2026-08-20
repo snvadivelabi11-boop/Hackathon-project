@@ -283,10 +283,11 @@ function generateFallbackResults(items: CsvProblemInputItem[]): AnalyzedProblemO
 /**
  * Calls OpenRouter AI with exponential backoff retries
  */
-async function callOpenRouter(prompt: string, apiKey: string, model: string): Promise<string> {
+async function callOpenRouter(prompt: string, apiKey: string, model: string): Promise<{ content: string; modelUsed: string }> {
   const modelsToTry = [
     model,
     'anthropic/claude-sonnet-4.6',
+    'openrouter/free',
   ].filter((m, i, arr) => arr.indexOf(m) === i);
 
   let lastError: Error | null = null;
@@ -333,7 +334,9 @@ async function callOpenRouter(prompt: string, apiKey: string, model: string): Pr
           continue; // Try fallback model only if 404
         }
         if (res.status === 402) {
-          throw new Error(`OpenRouter API error (402): Insufficient credits on OpenRouter account.`);
+          lastError = new Error(`OPENROUTER_INSUFFICIENT_CREDITS: OpenRouter API error (402): Insufficient credits on OpenRouter account for ${currentModel}.`);
+          // Try free model fallback if available
+          continue;
         }
         if (res.status === 401) {
           throw new Error(`OpenRouter API error (401): Invalid OpenRouter API key.`);
@@ -347,13 +350,14 @@ async function callOpenRouter(prompt: string, apiKey: string, model: string): Pr
         throw new Error('OpenRouter returned an empty response.');
       }
 
-      return choice;
+      const modelUsed = json.model || currentModel;
+      return { content: choice, modelUsed };
     } catch (err: any) {
       const isAbort = err.name === 'AbortError';
       const errMsg = isAbort ? 'OpenRouter request timed out after 45s.' : err.message;
       lastError = new Error(sanitizeError(errMsg, apiKey));
-      if (!errMsg.includes('404')) {
-        break; // Do not waste subrequests on non-404 errors
+      if (!errMsg.includes('404') && !errMsg.includes('402') && !errMsg.includes('OPENROUTER_INSUFFICIENT_CREDITS')) {
+        break; // Do not waste subrequests on non-model errors
       }
     }
   }
@@ -432,6 +436,7 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
         const allAnalyzedResults: AnalyzedProblemOutputItem[] = [];
         let aiSuccessCount = 0;
         let lastAiError: string | null = null;
+        let lastModelUsed = model;
 
         // Split into chunks of 5 items
         const chunks: CsvProblemInputItem[][] = [];
@@ -439,14 +444,15 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
           chunks.push(inputItems.slice(i, i + BATCH_CHUNK_SIZE));
         }
 
-        // Process chunks in concurrent batches of up to CONCURRENCY_LIMIT (4)
+        // Process chunks in concurrent batches of up to CONCURRENCY_LIMIT (3)
         for (let b = 0; b < chunks.length; b += CONCURRENCY_LIMIT) {
           const currentBatch = chunks.slice(b, b + CONCURRENCY_LIMIT);
           const batchPromises = currentBatch.map(async (chunk, batchIdx) => {
             const chunkNumber = b + batchIdx + 1;
             const prompt = buildBatchPrompt(chunk);
             try {
-              const aiResponseText = await callOpenRouter(prompt, apiKey, model);
+              const { content: aiResponseText, modelUsed } = await callOpenRouter(prompt, apiKey, model);
+              
               const cleaned = aiResponseText
                 .replace(/^```(?:json)?\s*/i, '')
                 .replace(/\s*```\s*$/i, '')
@@ -477,6 +483,7 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
                 count: chunk.length,
                 results: mappedResults,
                 error: null,
+                modelUsed,
               };
             } catch (err: any) {
               console.error(`[Worker] Chunk ${chunkNumber} AI call failed:`, err.message);
@@ -485,6 +492,7 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
                 count: 0,
                 results: generateFallbackResults(chunk),
                 error: err.message || 'AI batch analysis failed',
+                modelUsed: model,
               };
             }
           });
@@ -493,6 +501,7 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
           for (const output of batchOutputs) {
             if (output.success) {
               aiSuccessCount += output.count;
+              if (output.modelUsed) lastModelUsed = output.modelUsed;
             } else if (output.error) {
               lastAiError = output.error;
             }
@@ -509,7 +518,7 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
           JSON.stringify({
             success: true,
             totalProblems: allAnalyzedResults.length,
-            aiModelUsed: model,
+            aiModelUsed: lastModelUsed,
             aiSuccess: overallAiSuccess,
             aiError: lastAiError,
             problems: allAnalyzedResults,
