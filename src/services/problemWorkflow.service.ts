@@ -130,9 +130,10 @@ export async function saveAllProblemStatementsAsDraft(
 }
 
 /**
- * Resolves the actual persisted Firestore team-to-problem assignments for preview.
- * READ-ONLY: Derives mapping strictly from saved relationships in Firestore.
- * Does NOT recalculate, distribute, shuffle, or invent assignments.
+ * Resolves the deterministic 1-to-1 team-to-problem assignments for preview.
+ * 1. Preserves all explicit / persisted Firestore assignments without altering them.
+ * 2. Deterministically assigns any unassigned active teams to the first available FREE problem statement in order.
+ * 3. 100% deterministic, zero random assignment, strictly preserves existing mappings.
  */
 export function calculateDynamicAssignmentMapping(
   statements: ProblemStatement[],
@@ -149,6 +150,14 @@ export function calculateDynamicAssignmentMapping(
     return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
   });
 
+  const activeTeams = teams.filter((t) => t.status !== 'disabled');
+  const sortedTeams = [...activeTeams].sort((a, b) => {
+    const numA = parseInt(a.teamId?.match(/\d+/)?.[0] || '0', 10);
+    const numB = parseInt(b.teamId?.match(/\d+/)?.[0] || '0', 10);
+    if (numA !== numB) return numA - numB;
+    return (a.teamId || '').localeCompare(b.teamId || '', undefined, { numeric: true });
+  });
+
   const teamMap = new Map<string, Team>();
   teams.forEach((t) => {
     if (t.teamId) {
@@ -156,44 +165,73 @@ export function calculateDynamicAssignmentMapping(
     }
   });
 
-  return sortedStatements.map((st, idx) => {
-    const seq = st.order !== undefined && st.order !== null ? st.order : (st.sequence || idx + 1);
-    const assignedSet = new Set<string>();
+  // Track assignments: teamId -> statementId and statementId -> Set of teamIds
+  const assignedTeamToStatement = new Map<string, string>();
+  const statementToAssignedTeams = new Map<string, Set<string>>();
 
-    // 1. Check direct problem statement fields
+  sortedStatements.forEach((st) => statementToAssignedTeams.set(st.statementId, new Set<string>()));
+
+  // PHASE 1 — Register all EXISTING / PERSISTED assignments
+  sortedStatements.forEach((st) => {
+    const set = statementToAssignedTeams.get(st.statementId)!;
     if (st.assignedTeamId && st.assignedTeamId.trim().length > 0) {
-      assignedSet.add(st.assignedTeamId.trim());
+      const tid = st.assignedTeamId.trim();
+      set.add(tid);
+      assignedTeamToStatement.set(tid.toUpperCase(), st.statementId);
     }
     if (Array.isArray(st.assignedTeamIds)) {
       st.assignedTeamIds.forEach((tid) => {
-        if (tid && tid.trim()) assignedSet.add(tid.trim());
+        if (tid && tid.trim()) {
+          set.add(tid.trim());
+          assignedTeamToStatement.set(tid.trim().toUpperCase(), st.statementId);
+        }
       });
     }
     if (st.team && st.team.trim().length > 0 && !st.team.startsWith('PS') && st.team.toUpperCase().startsWith('TEAM')) {
-      assignedSet.add(st.team.trim());
+      const tid = st.team.trim();
+      set.add(tid);
+      assignedTeamToStatement.set(tid.toUpperCase(), st.statementId);
     }
+  });
 
-    // 2. Cross-reference actual teams in Firestore
-    teams.forEach((t) => {
-      if (!t.teamId) return;
-      const matchesStatementId =
-        t.assignedStatementId === st.statementId ||
-        t.problemStatementId === st.statementId ||
-        t.assignedProblemId === st.statementId ||
-        t.assignedProblemCode === st.statementId ||
-        t.problemStatementCode === st.statementId;
+  sortedTeams.forEach((t) => {
+    if (!t.teamId) return;
+    const tid = t.teamId.toUpperCase();
+    const assignedId =
+      t.assignedStatementId ||
+      t.problemStatementId ||
+      t.assignedProblemId ||
+      t.assignedProblemCode ||
+      t.problemStatementCode;
 
-      const matchesOrder =
-        (t.assignedProblemOrder !== undefined && t.assignedProblemOrder !== null && t.assignedProblemOrder === seq) ||
-        (t.problemStatementOrder !== undefined && t.problemStatementOrder !== null && t.problemStatementOrder === seq);
+    if (assignedId && statementToAssignedTeams.has(assignedId)) {
+      statementToAssignedTeams.get(assignedId)!.add(t.teamId.trim());
+      assignedTeamToStatement.set(tid, assignedId);
+    }
+  });
 
-      if (matchesStatementId || matchesOrder) {
-        assignedSet.add(t.teamId.trim());
-      }
+  // PHASE 2 — Deterministically assign any unassigned active teams to the first available FREE problem statement
+  const unassignedTeams = sortedTeams.filter((t) => !assignedTeamToStatement.has(t.teamId.toUpperCase()));
+
+  for (const team of unassignedTeams) {
+    const freeStatement = sortedStatements.find((st) => {
+      const set = statementToAssignedTeams.get(st.statementId)!;
+      return set.size === 0;
     });
 
+    if (freeStatement) {
+      const set = statementToAssignedTeams.get(freeStatement.statementId)!;
+      set.add(team.teamId.trim());
+      assignedTeamToStatement.set(team.teamId.toUpperCase(), freeStatement.statementId);
+    }
+  }
+
+  // PHASE 3 — Build final preview items
+  return sortedStatements.map((st, idx) => {
+    const seq = st.order !== undefined && st.order !== null ? st.order : (st.sequence || idx + 1);
+    const assignedSet = statementToAssignedTeams.get(st.statementId) || new Set<string>();
     const assignedTeamIds = Array.from(assignedSet);
-    const assignedTeams = assignedTeamIds.map((tid) => {
+    const assignedTeamsList = assignedTeamIds.map((tid) => {
       const teamObj = teamMap.get(tid.toUpperCase());
       return {
         teamId: tid,
@@ -217,7 +255,7 @@ export function calculateDynamicAssignmentMapping(
       constraints: st.constraints,
       expectedOutcome: st.expectedOutcome,
       assignedTeamIds,
-      assignedTeams,
+      assignedTeams: assignedTeamsList,
     };
   });
 }

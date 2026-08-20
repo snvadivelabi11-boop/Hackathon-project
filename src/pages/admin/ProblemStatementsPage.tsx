@@ -59,6 +59,7 @@ import {
   SaveOutlined,
   FileSearchOutlined,
   SwapOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import {
   subscribeToProblemStatements,
@@ -408,8 +409,28 @@ export const ProblemStatementsPage: React.FC = () => {
   // Re-generate Preview
   const handleRegeneratePreview = () => {
     setCustomAssignmentMapping(null);
-    message.info('Assignment preview recomputed from real active teams.');
+    message.info('Assignment preview refreshed.');
   };
+
+  // Auto-Assign All Teams Action
+  const handleAutoAssignAllTeams = async () => {
+    setLoadingAction(true);
+    try {
+      const { assignExistingTeamsAfterImport } = await import('../../services/problemAssignment.service');
+      const res = await assignExistingTeamsAfterImport({ uid: user?.uid, email: user?.email });
+      message.success(`Auto-assignment complete: ${res.assigned} assigned, ${res.alreadyAssigned} preserved.`);
+      handleRegeneratePreview();
+    } catch (err: any) {
+      message.error(`Auto-assignment failed: ${err.message}`);
+    } finally {
+      setLoadingAction(false);
+    }
+  };
+
+  const activeTeamsCount = teams.filter((t) => t.status !== 'disabled').length;
+  const assignedTeamsCount = validationResult.assignedTeamsCount;
+  const unassignedTeamsCount = validationResult.unassignedTeamIds.length;
+  const unassignedProblemsCount = Math.max(0, statements.length - assignedTeamsCount);
 
   // Open Edit Assignment Modal
   const handleOpenEditAssignment = (pItem: ProblemAssignmentPreviewItem) => {
@@ -917,9 +938,9 @@ export const ProblemStatementsPage: React.FC = () => {
             </div>
             {validationResult.isValid ? (
               <div style={{ color: '#059669', fontSize: '12px', marginTop: 8 }}>
-                ✓ {validationResult.totalTeams} Teams detected<br />
+                ✓ All active teams have problem statements assigned.<br />
                 ✓ {validationResult.totalStatements} Problem Statements valid<br />
-                ✓ All assignments verified
+                ✓ {validationResult.assignedTeamsCount} Teams assigned (100%)
               </div>
             ) : (
               <div style={{ color: '#dc2626', fontSize: '12px', marginTop: 8 }}>
@@ -1024,15 +1045,37 @@ export const ProblemStatementsPage: React.FC = () => {
                       <Tag color="purple" style={{ fontSize: '13px', fontWeight: 800, padding: '4px 10px' }}>
                         ASSIGNMENT PREVIEW
                       </Tag>
-                      <Text type="secondary" style={{ marginLeft: 8, fontSize: '13px' }}>
-                        Persisted assignments ({teams.filter((t) => t.status !== 'disabled').length} teams registered, {statements.length} problem statements)
-                      </Text>
                     </div>
 
-                    <Space>
+                    <Space wrap>
+                      <Tag color="blue" style={{ fontSize: '13px', padding: '4px 10px' }}>
+                        Active Teams: <strong>{activeTeamsCount}</strong>
+                      </Tag>
+                      <Tag color="purple" style={{ fontSize: '13px', padding: '4px 10px' }}>
+                        Assigned: <strong>{assignedTeamsCount}</strong>
+                      </Tag>
+                      <Tag color="green" style={{ fontSize: '13px', padding: '4px 10px' }}>
+                        Unassigned Problems: <strong>{unassignedProblemsCount}</strong>
+                      </Tag>
+                      <Tag color={unassignedTeamsCount === 0 ? 'success' : 'error'} style={{ fontSize: '13px', padding: '4px 10px' }}>
+                        Unassigned Teams: <strong>{unassignedTeamsCount}</strong>
+                      </Tag>
+
+                      {unassignedTeamsCount > 0 && (
+                        <Button
+                          icon={<ThunderboltOutlined />}
+                          onClick={handleAutoAssignAllTeams}
+                          loading={loadingAction}
+                          style={{ background: '#7c3aed', color: '#fff', borderColor: '#7c3aed', fontWeight: 600 }}
+                        >
+                          Auto-Assign All Teams
+                        </Button>
+                      )}
+
                       <Button icon={<ReloadOutlined />} onClick={handleRegeneratePreview}>
                         Refresh Preview
                       </Button>
+
                       <Button
                         type="primary"
                         icon={<SendOutlined />}
@@ -1049,61 +1092,97 @@ export const ProblemStatementsPage: React.FC = () => {
                       No problem statements available to display assignment preview.
                     </div>
                   ) : (
-                    <List
-                      grid={{ gutter: 16, xs: 1, sm: 1, md: 2, lg: 2, xl: 2, xxl: 3 }}
+                    <Table
                       dataSource={currentAssignmentMapping}
-                      renderItem={(pItem) => (
-                        <List.Item>
-                          <Card
-                            size="small"
-                            style={{ borderRadius: 10, border: '1px solid #e2e8f0', background: '#fafafa' }}
-                            title={
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <Space>
-                                  <Tag color="blue" style={{ fontWeight: 800 }}>#{pItem.sequence}</Tag>
-                                  <Text strong style={{ color: '#1e293b' }}>{pItem.statementId}</Text>
+                      rowKey="statementId"
+                      pagination={{ pageSize: 15, showSizeChanger: true }}
+                      size="middle"
+                      columns={[
+                        {
+                          title: '#',
+                          dataIndex: 'sequence',
+                          key: 'sequence',
+                          width: 65,
+                          render: (seq: number) => <Tag color="blue" style={{ fontWeight: 800 }}>#{seq}</Tag>,
+                        },
+                        {
+                          title: 'Team',
+                          key: 'team',
+                          width: 220,
+                          render: (_: any, record: ProblemAssignmentPreviewItem) => {
+                            if (record.assignedTeams && record.assignedTeams.length > 0) {
+                              return (
+                                <Space orientation="vertical" size={2}>
+                                  {record.assignedTeams.map((t) => (
+                                    <Space orientation="horizontal" key={t.teamId}>
+                                      <Tag color="purple" style={{ fontWeight: 700 }}>{t.teamId}</Tag>
+                                      <Text strong style={{ fontSize: '13px' }}>{t.teamName}</Text>
+                                    </Space>
+                                  ))}
                                 </Space>
-                                <Button
-                                  size="small"
-                                  type="link"
-                                  icon={<EditOutlined />}
-                                  onClick={() => handleOpenEditAssignment(pItem)}
-                                >
-                                  Edit Teams
-                                </Button>
-                              </div>
+                              );
                             }
-                          >
-                            <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: 6 }}>
-                              {pItem.title}
-                            </div>
-                            <Paragraph ellipsis={{ rows: 2 }} style={{ fontSize: '12px', color: '#64748b', marginBottom: 10 }}>
-                              {pItem.description}
-                            </Paragraph>
-
-                            <Divider style={{ margin: '8px 0' }} />
-
+                            if (record.assignedTeamIds && record.assignedTeamIds.length > 0) {
+                              return (
+                                <Space orientation="horizontal">
+                                  {record.assignedTeamIds.map((tid) => (
+                                    <Tag color="purple" key={tid} style={{ fontWeight: 700 }}>{tid}</Tag>
+                                  ))}
+                                </Space>
+                              );
+                            }
+                            return <Text type="secondary">—</Text>;
+                          },
+                        },
+                        {
+                          title: 'Problem Statement ID',
+                          dataIndex: 'statementId',
+                          key: 'statementId',
+                          width: 170,
+                          render: (id: string) => <Text strong style={{ color: '#0f172a' }}>{id}</Text>,
+                        },
+                        {
+                          title: 'Problem Statement Title',
+                          dataIndex: 'title',
+                          key: 'title',
+                          render: (title: string, record: ProblemAssignmentPreviewItem) => (
                             <div>
-                              <Text strong style={{ fontSize: '12px', color: '#475569' }}>
-                                Assigned Team:
-                              </Text>
-                              <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                                {pItem.assignedTeamIds.length > 0 ? (
-                                  pItem.assignedTeamIds.map((tid) => (
-                                    <Tag key={tid} color="purple" style={{ fontWeight: 700, fontSize: '12px' }}>
-                                      ASSIGNED — {tid}
-                                    </Tag>
-                                  ))
-                                ) : (
-                                  <Tag color="green" style={{ fontWeight: 700 }}>
-                                    FREE
-                                  </Tag>
-                                )}
+                              <div style={{ fontWeight: 600, color: '#1e293b' }}>{title}</div>
+                              <div style={{ fontSize: '12px', color: '#64748b' }}>
+                                {record.description?.slice(0, 100)}{record.description?.length > 100 ? '...' : ''}
                               </div>
                             </div>
-                          </Card>
-                        </List.Item>
-                      )}
+                          ),
+                        },
+                        {
+                          title: 'Status',
+                          key: 'status',
+                          width: 130,
+                          render: (_: any, record: ProblemAssignmentPreviewItem) => {
+                            const isAssigned = record.assignedTeamIds && record.assignedTeamIds.length > 0;
+                            return isAssigned ? (
+                              <Tag color="purple" style={{ fontWeight: 700 }}>Assigned</Tag>
+                            ) : (
+                              <Tag color="green" style={{ fontWeight: 700 }}>Unassigned / Free</Tag>
+                            );
+                          },
+                        },
+                        {
+                          title: 'Action',
+                          key: 'action',
+                          width: 110,
+                          render: (_: any, record: ProblemAssignmentPreviewItem) => (
+                            <Button
+                              size="small"
+                              type="link"
+                              icon={<EditOutlined />}
+                              onClick={() => handleOpenEditAssignment(record)}
+                            >
+                              Edit Team
+                            </Button>
+                          ),
+                        },
+                      ]}
                     />
                   )}
                 </div>

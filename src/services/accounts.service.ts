@@ -391,6 +391,27 @@ export async function createTeamAccount(input: CreateAccountInput): Promise<Crea
       metadata: { teamName, leaderName, username, teamId, selectedStatementId },
     }).catch(() => {});
 
+    // Auto-assign first available Problem Statement to the newly created team
+    let assignedStatementId: string | null = null;
+    let assignedStatementTitle: string | null = null;
+    let assignedProblemSequence: number | null = null;
+
+    try {
+      const { assignNextSequentialProblemToTeam } = await import('./problemAssignment.service');
+      const assignResult = await assignNextSequentialProblemToTeam(
+        teamId,
+        teamName,
+        auth.currentUser ? { uid: auth.currentUser.uid, email: auth.currentUser.email } : undefined
+      );
+      if (assignResult.success && assignResult.assigned) {
+        assignedStatementId = assignResult.statementId || null;
+        assignedStatementTitle = assignResult.statementTitle || null;
+        assignedProblemSequence = assignResult.problemSequence || null;
+      }
+    } catch (assignErr: any) {
+      console.warn('[AccountsService] Automatic problem statement assignment warning:', assignErr.message);
+    }
+
     return {
       success: true,
       teamId,
@@ -398,10 +419,12 @@ export async function createTeamAccount(input: CreateAccountInput): Promise<Crea
       teamName,
       leaderName,
       authUid,
-      assignedStatementId: null,
-      assignedStatementTitle: null,
-      assignedProblemSequence: null,
-      message: `Team account created successfully for ${teamName} (${teamId}).`,
+      assignedStatementId,
+      assignedStatementTitle,
+      assignedProblemSequence,
+      message: assignedStatementId
+        ? `Team account created for ${teamName} (${teamId}) and automatically assigned Problem #${assignedProblemSequence} (${assignedStatementId}: "${assignedStatementTitle}").`
+        : `Team account created successfully for ${teamName} (${teamId}).`,
     };
   } catch (err: any) {
     throw new Error(formatTeamCreationError(err));
