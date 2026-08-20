@@ -624,6 +624,43 @@ export async function run18ManualAssignmentTests() {
   }
   assert(caughtReadAfterWrite === true, 'TEST 18: Strict transaction successfully catches and prevents read-after-write violations');
 
+  // --- TEST 19: Create 20+ teams sequentially -> each gets the lowest-order FREE problem ---
+  console.log('\n--- TEST 19: Create 20 teams sequentially in lowest-order FREE problem order ---');
+  let sequentialSuccess = true;
+  for (let k = 50; k <= 70; k++) {
+    const tId = `TEAM${String(k).padStart(3, '0')}`;
+    const tName = `Team ${k}`;
+    const occupied = getComprehensiveOccupiedIds(db, tId);
+    // Find lowest-order free
+    let lowestFree: ProblemStatement | null = null;
+    for (let pNum = 1; pNum <= 102; pNum++) {
+      const psId = `PS${String(pNum).padStart(3, '0')}`;
+      const ps = db.problemStatements.get(psId);
+      if (ps && !isStatementOccupied(ps, occupied, tId) && ps.status !== 'PUBLISHED') {
+        lowestFree = ps;
+        break;
+      }
+    }
+    if (!lowestFree) {
+      sequentialSuccess = false;
+      break;
+    }
+    const res = await assignSpecificProblemStrictMock(db, tId, tName, lowestFree.statementId);
+    if (!res.success) {
+      sequentialSuccess = false;
+      break;
+    }
+  }
+  assert(sequentialSuccess === true, 'TEST 19: 20 teams created sequentially with distinct lowest-order FREE problem statements');
+
+  // --- TEST 20: Double-click prevention & Idempotency ---
+  console.log('\n--- TEST 20: Double click on create account for same team ---');
+  const doubleClick1 = await assignSpecificProblemStrictMock(db, 'TEAM080', 'Team 80', 'PS080');
+  // Second click immediately after first has already committed
+  const doubleClick2 = await assignSpecificProblemStrictMock(db, 'TEAM080', 'Team 80', 'PS080');
+  assert(doubleClick1.success === true, 'TEST 20: 1st click succeeded and created assignment');
+  assert(doubleClick2.success === false, 'TEST 20: 2nd click blocked safely preventing double creation');
+
   console.log('\n========================================================================================');
   console.log(`TOTAL TESTS: ${total} | PASSED: ${passed} | FAILED: ${total - passed}`);
   console.log('========================================================================================\n');

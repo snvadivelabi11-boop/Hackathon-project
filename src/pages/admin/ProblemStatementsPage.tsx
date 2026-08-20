@@ -264,13 +264,22 @@ export const ProblemStatementsPage: React.FC = () => {
 
   // Currently FREE problem statements for manual reassignment
   const freeProblemStatements = useMemo(() => {
+    const assignedInTeams = new Set<string>();
+    teams.forEach((t) => {
+      if (t.assignedStatementId) assignedInTeams.add(t.assignedStatementId);
+      if ((t as any).problemStatementId) assignedInTeams.add((t as any).problemStatementId);
+      if ((t as any).assignedProblemId) assignedInTeams.add((t as any).assignedProblemId);
+    });
+
     return statements.filter((st) => {
       const isPub = st.status === 'PUBLISHED' || st.status === 'published' || st.status === 'active';
       const isAssigned = (st.assignedTeamId && st.assignedTeamId.trim().length > 0) ||
-        (Array.isArray(st.assignedTeamIds) && st.assignedTeamIds.length > 0);
+        (Array.isArray(st.assignedTeamIds) && st.assignedTeamIds.length > 0) ||
+        (st.team && st.team.trim().length > 0) ||
+        assignedInTeams.has(st.statementId);
       return !isPub && !isAssigned;
     });
-  }, [statements]);
+  }, [statements, teams]);
 
   const handleOpenReassign = (record: ProblemStatement, teamId: string) => {
     setReassignTarget({ statement: record, teamId });
@@ -635,10 +644,32 @@ export const ProblemStatementsPage: React.FC = () => {
       key: 'assignedTeam',
       render: (_: any, record: ProblemStatement) => {
         const isPub = record.status === 'PUBLISHED' || record.status === 'published' || record.status === 'active';
-        const pItem = currentAssignmentMapping.find((m) => m.statementId === record.statementId);
-        const assignedIds = pItem && pItem.assignedTeamIds.length > 0
-          ? pItem.assignedTeamIds
-          : (record.assignedTeamId ? [record.assignedTeamId] : (Array.isArray(record.assignedTeamIds) ? record.assignedTeamIds : []));
+        const assignedSet = new Set<string>();
+
+        if (record.assignedTeamId && record.assignedTeamId.trim().length > 0) {
+          assignedSet.add(record.assignedTeamId.trim());
+        }
+        if (Array.isArray(record.assignedTeamIds)) {
+          record.assignedTeamIds.forEach((tid) => {
+            if (tid && tid.trim()) assignedSet.add(tid.trim());
+          });
+        }
+        if (record.team && record.team.trim().length > 0) {
+          assignedSet.add(record.team.trim());
+        }
+
+        teams.forEach((t) => {
+          if (
+            (t.assignedStatementId === record.statementId ||
+             (t as any).problemStatementId === record.statementId ||
+             (t as any).assignedProblemId === record.statementId) &&
+            t.teamId
+          ) {
+            assignedSet.add(t.teamId);
+          }
+        });
+
+        const assignedIds = Array.from(assignedSet);
 
         if (assignedIds.length > 0) {
           return (

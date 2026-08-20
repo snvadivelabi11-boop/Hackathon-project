@@ -22,7 +22,7 @@ import {
   CheckCircleOutlined,
   BookOutlined,
 } from '@ant-design/icons';
-import { collection, getDocs } from 'firebase/firestore';
+import { collection, getDocs, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import {
   createTeamAccount,
@@ -84,6 +84,19 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
       form.resetFields();
       fetchPreview();
       fetchProblemStatements();
+
+      // Real-time snapshot listeners while modal is open to ensure instant reflection of database assignments
+      const unsubPS = onSnapshot(collection(db, 'problemStatements'), () => {
+        fetchProblemStatements();
+      });
+      const unsubTPA = onSnapshot(collection(db, 'teamProblemAssignments'), () => {
+        fetchProblemStatements();
+      });
+
+      return () => {
+        unsubPS();
+        unsubTPA();
+      };
     }
   }, [open]);
 
@@ -155,6 +168,21 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
       });
 
       setProblemOptions(options);
+
+      // Automatically select the first genuinely FREE problem statement in order by default
+      const firstFree = options.find((p) => p.isFree);
+      if (firstFree) {
+        setSelectedStatementId((prev) => {
+          if (prev) {
+            const currentSelected = options.find((o) => o.statementId === prev);
+            if (currentSelected && currentSelected.isFree) {
+              return prev;
+            }
+          }
+          form.setFieldsValue({ selectedStatementId: firstFree.statementId });
+          return firstFree.statementId;
+        });
+      }
     } catch (err) {
       console.warn('[AddTeamModal] Error loading problem statements:', err);
     } finally {
