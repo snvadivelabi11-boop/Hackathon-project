@@ -138,7 +138,7 @@ PS002,Security,"Unclosed quote line`;
   const mockAiSuccessResponse: CsvAiAnalysisResponse = {
     success: true,
     totalProblems: 2,
-    aiModelUsed: 'anthropic/claude-3.5-sonnet',
+    aiModelUsed: 'anthropic/claude-sonnet-4.6',
     aiSuccess: true,
     problems: [
       {
@@ -253,7 +253,7 @@ PS002,Security,"Unclosed quote line`;
   const partialAiResponse: CsvAiAnalysisResponse = {
     success: true,
     totalProblems: 1,
-    aiModelUsed: 'anthropic/claude-3.5-sonnet',
+    aiModelUsed: 'anthropic/claude-sonnet-4.6',
     aiSuccess: true,
     problems: [mockAiSuccessResponse.problems[0]], // Only 1 problem returned instead of 2
   };
@@ -265,7 +265,7 @@ PS002,Security,"Unclosed quote line`;
   const extraFabricatedAiResponse: CsvAiAnalysisResponse = {
     success: true,
     totalProblems: 3,
-    aiModelUsed: 'anthropic/claude-3.5-sonnet',
+    aiModelUsed: 'anthropic/claude-sonnet-4.6',
     aiSuccess: true,
     problems: [
       ...mockAiSuccessResponse.problems,
@@ -297,7 +297,7 @@ PS002,Security,"Unclosed quote line`;
   const duplicateAiResponse: CsvAiAnalysisResponse = {
     success: true,
     totalProblems: 3,
-    aiModelUsed: 'anthropic/claude-3.5-sonnet',
+    aiModelUsed: 'anthropic/claude-sonnet-4.6',
     aiSuccess: true,
     problems: [
       mockAiSuccessResponse.problems[0],
@@ -353,7 +353,7 @@ PS-IOT-03,SmartCity,,UrbanTransit,Operations,"Real-time bus arrival prediction w
   const e2eSimulatedAi: CsvAiAnalysisResponse = {
     success: true,
     totalProblems: 3,
-    aiModelUsed: 'anthropic/claude-3.5-sonnet',
+    aiModelUsed: 'anthropic/claude-sonnet-4.6',
     aiSuccess: true,
     problems: [
       {

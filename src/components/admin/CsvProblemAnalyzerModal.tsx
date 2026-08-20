@@ -691,7 +691,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
               <Space size="middle">
                 <Text strong>AI Analysis Status:</Text>
                 {aiStatus === 'Processing' && <Tag icon={<SyncOutlined spin />} color="processing">Processing</Tag>}
-                {aiStatus === 'Completed' && <Tag icon={<CheckCircleOutlined />} color="success">Completed ({analysisResult.aiModelUsed || 'Claude 3.5 Sonnet'})</Tag>}
+                {aiStatus === 'Completed' && <Tag icon={<CheckCircleOutlined />} color="success">Completed ({analysisResult.aiModelUsed || 'Claude Sonnet'})</Tag>}
                 {aiStatus === 'Failed' && <Tag icon={<WarningOutlined />} color="error">Failed (Local Fallback Active)</Tag>}
                 {aiStatus === 'Idle' && <Tag color="default">Not Run</Tag>}
               </Space>

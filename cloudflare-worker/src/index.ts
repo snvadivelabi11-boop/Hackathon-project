@@ -43,7 +43,7 @@ export interface AnalyzedProblemOutputItem {
 }
 
 const BATCH_CHUNK_SIZE = 20;
-const DEFAULT_MODEL = 'anthropic/claude-3.5-sonnet';
+const DEFAULT_MODEL = 'anthropic/claude-sonnet-4.6';
 
 /**
  * Builds CORS headers for responses
@@ -148,93 +148,120 @@ For EACH of the ${items.length} items in the array, output an object with these 
 - "confidence": float between 0.0 and 1.0 (confidence in problem clarity and extraction)
 - "isValid": boolean (true if actionable problem statement, false if empty/gibberish/header text)
 - "qualityScore": integer between 1 and 10 (overall quality score)
-- "issues": array of strings (any ambiguities, missing constraints, or vagueness detected)
-- "suggestions": array of strings (actionable suggestions to improve the problem statement)
-- "difficulty": "EASY" | "MEDIUM" | "HARD"
+- "issues": array of strings (list of potential gaps, ambiguities, or missing requirements; empty array if clear)
+- "suggestions": array of strings (concrete improvements or extension ideas)
+- "difficulty": string ("EASY", "MEDIUM", or "HARD")
 
-INPUT DATASET:
+Here is the JSON dataset to analyze:
 ${datasetJson}
 
-Return a JSON array containing exactly ${items.length} analyzed objects in the exact input sequence. Return ONLY raw JSON array, without markdown code fences or conversational text.`;
+Respond with a JSON object in this exact structure:
+{
+  "problems": [
+    ...
+  ]
+}`;
 }
 
 /**
- * Normalizes and validates a single AI returned item against original input
+ * Normalizes an analyzed item from AI response, ensuring all required fields are present and safe
  */
-function normalizeAnalyzedItem(raw: any, input: CsvProblemInputItem, fallbackSeq: number): AnalyzedProblemOutputItem {
-  const seq = input.sequence ?? fallbackSeq;
-  const sourceId = input.problemStatementId;
-  const inferredId = sourceId && sourceId.trim().length > 0 ? sourceId.trim() : `PS${String(seq).padStart(3, '0')}`;
+function normalizeAnalyzedItem(
+  aiItem: any,
+  fallbackInput: CsvProblemInputItem,
+  expectedSequence: number
+): AnalyzedProblemOutputItem {
+  const item = aiItem || {};
+  const rawSeq = item.sequence !== undefined && item.sequence !== null ? item.sequence : expectedSequence;
+  const seq = typeof rawSeq === 'number' ? rawSeq : parseInt(String(rawSeq), 10) || expectedSequence;
 
-  const cleanTitle = (raw?.title && typeof raw.title === 'string' && raw.title.trim().length > 0)
-    ? raw.title.trim()
-    : input.title || (input.description.length > 80 ? input.description.slice(0, 77) + '...' : input.description);
+  const rawOrder = item.order !== undefined && item.order !== null ? item.order : seq;
+  const order = typeof rawOrder === 'number' ? rawOrder : parseInt(String(rawOrder), 10) || seq;
 
-  const cleanCategory = (raw?.category && typeof raw.category === 'string' && raw.category.trim().length > 0)
-    ? raw.category.trim()
-    : input.category || 'General';
+  const rawPsId = item.problemStatementId || fallbackInput.problemStatementId;
+  const problemStatementId = rawPsId
+    ? String(rawPsId).trim()
+    : `PS${String(seq).padStart(3, '0')}`;
 
-  const cleanTeam = (input.team && input.team.trim().length > 0)
-    ? input.team.trim()
-    : (raw?.team && typeof raw.team === 'string' && raw.team.trim().length > 0 ? raw.team.trim() : null);
+  const title = (item.title && String(item.title).trim()) ||
+    fallbackInput.title ||
+    `Problem Statement #${seq}`;
 
-  const cleanOrg = (input.organization && input.organization.trim().length > 0)
-    ? input.organization.trim()
-    : (raw?.organization && typeof raw.organization === 'string' && raw.organization.trim().length > 0 ? raw.organization.trim() : null);
+  const description = (item.description && String(item.description).trim()) ||
+    fallbackInput.description ||
+    title;
 
-  const cleanDept = (input.department && input.department.trim().length > 0)
-    ? input.department.trim()
-    : (raw?.department && typeof raw.department === 'string' && raw.department.trim().length > 0 ? raw.department.trim() : null);
+  const category = (item.category && String(item.category).trim()) ||
+    fallbackInput.category ||
+    'General';
 
-  const cleanAnalysis = (raw?.analysis && typeof raw.analysis === 'string' && raw.analysis.trim().length > 0)
-    ? raw.analysis.trim()
-    : `Problem statement #${seq}: ${cleanTitle}`;
+  const team = item.team !== undefined && item.team !== null && String(item.team).trim().length > 0
+    ? String(item.team).trim()
+    : (fallbackInput.team || null);
 
-  const cleanDifficulty: 'EASY' | 'MEDIUM' | 'HARD' =
-    ['EASY', 'MEDIUM', 'HARD'].includes(raw?.difficulty)
-      ? raw.difficulty
-      : (['EASY', 'MEDIUM', 'HARD'].includes(input.difficulty?.toUpperCase() || '')
-          ? (input.difficulty!.toUpperCase() as 'EASY' | 'MEDIUM' | 'HARD')
-          : 'MEDIUM');
+  const organization = item.organization !== undefined && item.organization !== null && String(item.organization).trim().length > 0
+    ? String(item.organization).trim()
+    : (fallbackInput.organization || null);
+
+  const department = item.department !== undefined && item.department !== null && String(item.department).trim().length > 0
+    ? String(item.department).trim()
+    : (fallbackInput.department || null);
+
+  const analysis = (item.analysis && String(item.analysis).trim()) ||
+    `Problem statement #${seq}: ${title}`;
+
+  const confidence = clampConfidence(item.confidence);
+  const isValid = item.isValid !== false;
+  const qualityScore = clampQualityScore(item.qualityScore);
+
+  const issues = Array.isArray(item.issues)
+    ? item.issues.map((s: any) => String(s).trim()).filter(Boolean)
+    : [];
+
+  const suggestions = Array.isArray(item.suggestions)
+    ? item.suggestions.map((s: any) => String(s).trim()).filter(Boolean)
+    : [];
+
+  const rawDiff = item.difficulty ? String(item.difficulty).toUpperCase().trim() : (fallbackInput.difficulty || 'MEDIUM');
+  const difficulty: 'EASY' | 'MEDIUM' | 'HARD' =
+    rawDiff === 'EASY' || rawDiff === 'HARD' ? rawDiff : 'MEDIUM';
 
   return {
     sequence: seq,
-    order: typeof raw?.order === 'number' && raw.order > 0 ? raw.order : seq,
-    problemStatementId: raw?.problemStatementId && typeof raw.problemStatementId === 'string' && raw.problemStatementId.trim().length > 0
-      ? raw.problemStatementId.trim()
-      : inferredId,
-    title: cleanTitle,
-    description: input.description, // ALWAYS preserve verbatim original description
-    category: cleanCategory,
-    team: cleanTeam,
-    organization: cleanOrg,
-    department: cleanDept,
-    analysis: cleanAnalysis,
-    confidence: clampConfidence(raw?.confidence),
-    isValid: typeof raw?.isValid === 'boolean' ? raw.isValid : true,
-    qualityScore: clampQualityScore(raw?.qualityScore),
-    issues: Array.isArray(raw?.issues) ? raw.issues.filter((s: any) => typeof s === 'string') : [],
-    suggestions: Array.isArray(raw?.suggestions) ? raw.suggestions.filter((s: any) => typeof s === 'string') : [],
-    difficulty: cleanDifficulty,
+    order,
+    problemStatementId,
+    title,
+    description,
+    category,
+    team,
+    organization,
+    department,
+    analysis,
+    confidence,
+    isValid,
+    qualityScore,
+    issues,
+    suggestions,
+    difficulty,
   };
 }
 
 /**
- * Fallback generator if AI call is unavailable
+ * Generates structured fallback output when AI analysis is unreachable
  */
 function generateFallbackResults(items: CsvProblemInputItem[]): AnalyzedProblemOutputItem[] {
   return items.map((item, idx) => {
-    const seq = item.sequence ?? idx + 1;
-    const sourceId = item.problemStatementId;
-    const statementId = sourceId && sourceId.trim().length > 0 ? sourceId.trim() : `PS${String(seq).padStart(3, '0')}`;
-    const title = item.title || (item.description.length > 80 ? item.description.slice(0, 77) + '...' : item.description);
+    const seq = item.sequence || idx + 1;
+    const psId = item.problemStatementId || `PS${String(seq).padStart(3, '0')}`;
+    const title = item.title || `Problem Statement #${seq}`;
+    const desc = item.description || title;
 
     return {
       sequence: seq,
       order: seq,
-      problemStatementId: statementId,
+      problemStatementId: psId,
       title,
-      description: item.description,
+      description: desc,
       category: item.category || 'General',
       team: item.team || null,
       organization: item.organization || null,
@@ -245,8 +272,8 @@ function generateFallbackResults(items: CsvProblemInputItem[]): AnalyzedProblemO
       qualityScore: 7,
       issues: [],
       suggestions: [],
-      difficulty: (['EASY', 'MEDIUM', 'HARD'].includes(item.difficulty?.toUpperCase() || '')
-        ? (item.difficulty!.toUpperCase() as 'EASY' | 'MEDIUM' | 'HARD')
+      difficulty: (item.difficulty && (item.difficulty.toUpperCase() === 'EASY' || item.difficulty.toUpperCase() === 'HARD')
+        ? (item.difficulty.toUpperCase() as 'EASY' | 'HARD')
         : 'MEDIUM'),
     };
   });
@@ -258,9 +285,10 @@ function generateFallbackResults(items: CsvProblemInputItem[]): AnalyzedProblemO
 async function callOpenRouter(prompt: string, apiKey: string, model: string): Promise<string> {
   const modelsToTry = [
     model,
-    'anthropic/claude-3.7-sonnet',
-    'anthropic/claude-3.5-sonnet:beta',
-    'anthropic/claude-3-5-sonnet',
+    'anthropic/claude-sonnet-4.6',
+    '~anthropic/claude-sonnet-latest',
+    'anthropic/claude-sonnet-5',
+    'anthropic/claude-sonnet-4.5',
     'anthropic/claude-3-haiku',
   ].filter((m, i, arr) => arr.indexOf(m) === i);
 

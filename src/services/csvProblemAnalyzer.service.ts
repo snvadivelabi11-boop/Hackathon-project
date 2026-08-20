@@ -726,7 +726,7 @@ export function generateClientFallbackResponse(validQuestions: AnalyzedQuestionI
   return {
     success: true,
     totalProblems: validQuestions.length,
-    aiModelUsed: 'anthropic/claude-3.5-sonnet (Local Fallback)',
+    aiModelUsed: 'anthropic/claude-sonnet-4.6 (Local Fallback)',
     aiSuccess: false,
     aiError: 'Cloudflare Worker backend offline or unreachable',
     problems: validQuestions.map((item, idx) => {

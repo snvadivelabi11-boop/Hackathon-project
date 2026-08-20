@@ -9,7 +9,7 @@ export function getOpenRouterApiKey(): string {
 }
 
 // Configured Claude model through OpenRouter (server/env configurable)
-export const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'anthropic/claude-3.5-sonnet';
+export const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'anthropic/claude-sonnet-4.6';
 
 export interface OpenRouterMessage {
   role: 'system' | 'user' | 'assistant';

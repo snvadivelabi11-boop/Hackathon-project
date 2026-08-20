@@ -25,7 +25,7 @@ async function runWorkerTests() {
   console.log('========================================================================================\n');
 
   const mockEnv: Env = {
-    OPENROUTER_MODEL: 'anthropic/claude-3.5-sonnet',
+    OPENROUTER_MODEL: 'anthropic/claude-sonnet-4.6',
     ALLOWED_ORIGINS: '*',
   };
 
