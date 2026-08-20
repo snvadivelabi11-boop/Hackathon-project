@@ -961,6 +961,15 @@ export async function saveAnalyzedProblemsToFirestore(
 
   await batch.commit();
 
+  // Auto-assign existing teams to newly imported problems (TEAM<N> → Problem #N)
+  try {
+    const { assignExistingTeamsAfterImport } = await import('./problemAssignment.service');
+    const assignResult = await assignExistingTeamsAfterImport(user);
+    console.log('[CsvAnalyzer] Post-import auto-assignment:', assignResult);
+  } catch (assignErr: any) {
+    console.warn('[CsvAnalyzer] Post-import auto-assignment warning (non-blocking):', assignErr.message);
+  }
+
   return {
     success: true,
     savedCount: validQuestions.length,

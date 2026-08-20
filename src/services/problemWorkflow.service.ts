@@ -113,6 +113,15 @@ export async function saveAllProblemStatementsAsDraft(
 
   await batch.commit();
 
+  // Auto-assign existing teams to newly saved problems (TEAM<N> → Problem #N)
+  try {
+    const { assignExistingTeamsAfterImport } = await import('./problemAssignment.service');
+    const assignResult = await assignExistingTeamsAfterImport(adminUser);
+    console.log('[ProblemWorkflow] Post-import auto-assignment:', assignResult);
+  } catch (assignErr: any) {
+    console.warn('[ProblemWorkflow] Post-import auto-assignment warning (non-blocking):', assignErr.message);
+  }
+
   return {
     success: true,
     savedCount: parsedProblems.length,

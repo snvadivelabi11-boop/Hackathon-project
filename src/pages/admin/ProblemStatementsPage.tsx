@@ -395,7 +395,7 @@ export const ProblemStatementsPage: React.FC = () => {
         { uid: user?.uid, email: user?.email }
       );
 
-      message.success(`✓ ${res.savedCount} Problem Statements Saved as Draft in Firestore! (Hidden from users)`);
+      message.success(`✓ ${res.savedCount} Problem Statements saved & auto-assigned to existing teams!`);
       setIsBulkModalOpen(false);
       setActiveTab('preview'); // Switch to preview tab to show generated preview mapping
     } catch (err: any) {

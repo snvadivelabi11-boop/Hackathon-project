@@ -21,9 +21,7 @@ import { db, auth, functions, isFirebaseConfigured, firebaseConfig } from '../fi
 import { Team, UserProfile } from '../types';
 
 import {
-  getNextAvailableProblemStatement,
   assignNextSequentialProblemToTeam,
-  assignSpecificProblemToTeam,
 } from './problemAssignment.service';
 
 export interface CreateAccountInput {
@@ -291,19 +289,8 @@ export async function createTeamAccount(input: CreateAccountInput): Promise<Crea
       teamName,
       leaderName,
       password,
-      selectedStatementId,
     });
     if (response.data?.success) {
-      if (selectedStatementId && !response.data.assignedStatementId) {
-        try {
-          await assignSpecificProblemToTeam(response.data.teamId, teamName, selectedStatementId, {
-            uid: auth.currentUser?.uid,
-            email: auth.currentUser?.email,
-          });
-        } catch (e) {
-          console.warn('[AccountsService] Cloud Function follow-up problem assignment warning:', e);
-        }
-      }
       return response.data;
     }
   } catch (cloudFnError: any) {
@@ -413,35 +400,22 @@ export async function createTeamAccount(input: CreateAccountInput): Promise<Crea
       metadata: { teamName, leaderName, username, teamId, selectedStatementId },
     }).catch(() => {});
 
-    // Explicit manual problem assignment if requested by Admin
+    // Automatic deterministic problem assignment: TEAM<N> → Problem #N
+    // No manual selection — selectedStatementId is ignored for normal team creation.
     let assignedStatementId: string | null = null;
     let assignedStatementTitle: string | null = null;
     let assignedProblemSequence: number | null = null;
 
-    if (selectedStatementId) {
-      const assignResult = await assignSpecificProblemToTeam(teamId, teamName, selectedStatementId, {
-        uid: auth.currentUser?.uid,
-        email: auth.currentUser?.email,
-      });
-      if (assignResult.success && assignResult.assigned) {
-        assignedStatementId = assignResult.statementId || null;
-        assignedStatementTitle = assignResult.statementTitle || null;
-        assignedProblemSequence = assignResult.problemSequence || null;
-      } else if (!assignResult.success) {
-        throw new Error(assignResult.message || 'This problem statement has already been assigned. Please select another FREE problem statement.');
-      }
-    } else {
-      const assignResult = await assignNextSequentialProblemToTeam(teamId, teamName, {
-        uid: auth.currentUser?.uid,
-        email: auth.currentUser?.email,
-      });
-      if (assignResult.success && assignResult.assigned) {
-        assignedStatementId = assignResult.statementId || null;
-        assignedStatementTitle = assignResult.statementTitle || null;
-        assignedProblemSequence = assignResult.problemSequence || null;
-      } else if (!assignResult.success) {
-        throw new Error(assignResult.message || 'No unassigned problem statements are available.');
-      }
+    const assignResult = await assignNextSequentialProblemToTeam(teamId, teamName, {
+      uid: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+    });
+    if (assignResult.success && assignResult.assigned) {
+      assignedStatementId = assignResult.statementId || null;
+      assignedStatementTitle = assignResult.statementTitle || null;
+      assignedProblemSequence = assignResult.problemSequence || null;
+    } else if (!assignResult.success) {
+      throw new Error(assignResult.message || 'Automatic problem assignment failed. No matching problem statement found for this team.');
     }
 
     return {

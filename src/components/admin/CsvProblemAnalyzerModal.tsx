@@ -288,7 +288,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
 
       setSavedCount(res.savedCount);
       setStep(4);
-      message.success(`✓ Saved ${res.savedCount} Problems as Draft! Ready for Distribution.`);
+      message.success(`✓ Saved ${res.savedCount} Problems as Draft & auto-assigned to existing teams!`);
       onImportComplete();
     } catch (err: any) {
       message.error(err.message || 'Failed to save problems to database.');

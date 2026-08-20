@@ -863,8 +863,10 @@ export function isStatementOccupied(statement: ProblemStatement, occupiedSet: Se
 }
 
 /**
- * Calculates the next available unassigned Problem Statement in sequential order (1..N).
- * Pure query helper for previewing in the Add Team modal or UI without writing to Firestore.
+ * @deprecated — "First free problem" logic has been removed.
+ * Returns summary counts only. Does NOT find or suggest a "next available" problem.
+ * The deterministic rule TEAM<N> → Problem #N is the only assignment strategy.
+ * Kept for backward compatibility with any import that references this function.
  */
 export async function getNextAvailableProblemStatement(
   knownStatements?: ProblemStatement[],
@@ -876,7 +878,6 @@ export async function getNextAvailableProblemStatement(
   totalAvailable: number;
 }> {
   try {
-    // 1. Fetch statements if not provided
     let statements = knownStatements;
     if (!statements || statements.length === 0) {
       const psSnap = await getDocs(collection(db, 'problemStatements'));
@@ -890,30 +891,19 @@ export async function getNextAvailableProblemStatement(
       return { nextProblem: null, totalStatements: 0, totalAssigned: 0, totalAvailable: 0 };
     }
 
-    // 2. Sort deterministically by Admin Order (1..N), sequence, and numeric statementId
-    const sorted = [...statements].sort((a, b) => {
-      const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence !== undefined && a.sequence !== null ? a.sequence : 0);
-      const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence !== undefined && b.sequence !== null ? b.sequence : 0);
-      if (ordA !== ordB) return ordA - ordB;
-      return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
-    });
-
-    // 3. Fetch comprehensive occupied statement IDs across all collections
     const occupiedIds = await getComprehensiveOccupiedStatementIds(excludeTeamId);
-
-    // 4. Find the first unassigned problem statement in sequential order
-    const nextAvailable = sorted.find((st) => !isStatementOccupied(st, occupiedIds, excludeTeamId)) || null;
-
     let assignedCount = 0;
-    sorted.forEach((st) => {
+    statements.forEach((st) => {
       if (isStatementOccupied(st, occupiedIds, excludeTeamId)) assignedCount++;
     });
 
-    const totalAvailable = Math.max(0, sorted.length - assignedCount);
+    const totalAvailable = Math.max(0, statements.length - assignedCount);
 
+    // IMPORTANT: Returns null for nextProblem — no first-free fallback.
+    // Use assignNextSequentialProblemToTeam() with deterministic TEAM<N> → Problem #N instead.
     return {
-      nextProblem: nextAvailable,
-      totalStatements: sorted.length,
+      nextProblem: null,
+      totalStatements: statements.length,
       totalAssigned: assignedCount,
       totalAvailable,
     };
@@ -924,15 +914,188 @@ export async function getNextAvailableProblemStatement(
 }
 
 /**
- * Assigns the next available unassigned Problem Statement in sequential order (1..N) to a Team.
- * 
+ * Automatically assigns existing unassigned Teams to their deterministic Problem Statements
+ * after a successful Problem Statement import/upload.
+ *
+ * RULE: TEAM<N> → Problem with order === N (permanent, one-to-one).
+ *
+ * For each existing team:
+ *   - If team already has a persisted assignment → SKIP (preserve existing).
+ *   - If Problem #N exists and is unassigned → ASSIGN atomically.
+ *   - If Problem #N exists but is assigned to another team → LOG CONFLICT (do not reassign).
+ *   - If Problem #N does not exist → SKIP (no problem for this team yet).
+ *
+ * Uses individual Firestore transactions per team to stay within limits and allow partial success.
+ */
+export async function assignExistingTeamsAfterImport(
+  adminUser?: { uid?: string; email?: string }
+): Promise<{
+  totalTeams: number;
+  assigned: number;
+  alreadyAssigned: number;
+  skipped: number;
+  conflicts: string[];
+  errors: string[];
+}> {
+  const result = {
+    totalTeams: 0,
+    assigned: 0,
+    alreadyAssigned: 0,
+    skipped: 0,
+    conflicts: [] as string[],
+    errors: [] as string[],
+  };
+
+  try {
+    // 1. Read all teams
+    const teamsSnap = await getDocs(collection(db, 'teams'));
+    const allTeams: Team[] = [];
+    teamsSnap.forEach((d) => {
+      allTeams.push({ teamId: d.id, ...d.data() } as Team);
+    });
+
+    if (allTeams.length === 0) {
+      console.log('[PostImportAssignment] No teams found. Nothing to assign.');
+      return result;
+    }
+
+    // 2. Read all problem statements
+    const psSnap = await getDocs(collection(db, 'problemStatements'));
+    const allStatements: ProblemStatement[] = [];
+    psSnap.forEach((d) => {
+      allStatements.push({ statementId: d.id, ...d.data() } as ProblemStatement);
+    });
+
+    if (allStatements.length === 0) {
+      console.log('[PostImportAssignment] No problem statements found. Nothing to assign.');
+      return result;
+    }
+
+    // 3. Build problem-by-order lookup (permanent order field)
+    const problemByOrder = new Map<number, ProblemStatement>();
+    allStatements.forEach((ps) => {
+      const ord = ps.order !== undefined && ps.order !== null ? ps.order : (ps.sequence || 0);
+      if (ord > 0) {
+        problemByOrder.set(ord, ps);
+      }
+    });
+
+    // 4. Read existing assignments to check occupancy
+    const assignSnap = await getDocs(collection(db, 'teamProblemAssignments')).catch(() => null);
+    const existingAssignments = new Set<string>();
+    const assignedStatementIds = new Set<string>();
+    if (assignSnap) {
+      assignSnap.forEach((d) => {
+        existingAssignments.add(d.id); // teamId
+        const data = d.data();
+        if (data.statementId) assignedStatementIds.add(data.statementId);
+      });
+    }
+
+    // Also check problem-level assignedTeamId fields
+    allStatements.forEach((ps) => {
+      if (ps.assignedTeamId && ps.assignedTeamId.trim().length > 0) {
+        assignedStatementIds.add(ps.statementId);
+      }
+    });
+
+    result.totalTeams = allTeams.length;
+
+    // 5. Sort teams by numeric sequence for deterministic processing
+    const sortedTeams = [...allTeams].sort((a, b) => {
+      const numA = parseInt(a.teamId.match(/\d+/)?.[0] || '0', 10);
+      const numB = parseInt(b.teamId.match(/\d+/)?.[0] || '0', 10);
+      return numA - numB;
+    });
+
+    // 6. Process each team
+    for (const team of sortedTeams) {
+      const numMatch = team.teamId.match(/\d+/);
+      if (!numMatch) {
+        result.skipped++;
+        continue;
+      }
+      const teamNum = parseInt(numMatch[0], 10);
+
+      // Check if team already has any persisted assignment
+      const hasExistingAssignment =
+        existingAssignments.has(team.teamId) ||
+        !!(team.assignedStatementId && team.assignedStatementId.trim().length > 0) ||
+        !!(team.assignedProblemId && (team.assignedProblemId as string).trim().length > 0) ||
+        !!(team.problemStatementId && (team.problemStatementId as string).trim().length > 0) ||
+        team.assignmentStatus === 'ASSIGNED';
+
+      if (hasExistingAssignment) {
+        result.alreadyAssigned++;
+        continue;
+      }
+
+      // Find the exact problem for this team's sequence number
+      const targetProblem = problemByOrder.get(teamNum);
+      if (!targetProblem) {
+        // No problem exists for this team number — skip silently
+        result.skipped++;
+        continue;
+      }
+
+      // Check if the target problem is already assigned to another team
+      if (assignedStatementIds.has(targetProblem.statementId)) {
+        result.conflicts.push(
+          `${team.teamId} requires Problem #${teamNum} (${targetProblem.statementId}), but it is already assigned to another team.`
+        );
+        result.skipped++;
+        continue;
+      }
+
+      // Assign using the existing atomic transaction function
+      try {
+        const assignResult = await assignNextSequentialProblemToTeam(
+          team.teamId,
+          team.teamName,
+          adminUser
+        );
+
+        if (assignResult.success && assignResult.assigned) {
+          result.assigned++;
+          // Mark as occupied for subsequent iterations
+          existingAssignments.add(team.teamId);
+          assignedStatementIds.add(targetProblem.statementId);
+        } else if (assignResult.alreadyAssigned) {
+          result.alreadyAssigned++;
+          existingAssignments.add(team.teamId);
+        } else {
+          result.skipped++;
+          if (assignResult.message) {
+            result.conflicts.push(`${team.teamId}: ${assignResult.message}`);
+          }
+        }
+      } catch (err: any) {
+        result.errors.push(`${team.teamId}: ${err.message}`);
+        result.skipped++;
+      }
+    }
+
+    console.log(
+      `[PostImportAssignment] Complete: ${result.assigned} assigned, ${result.alreadyAssigned} already assigned, ${result.skipped} skipped, ${result.conflicts.length} conflicts, ${result.errors.length} errors`
+    );
+
+    return result;
+  } catch (err: any) {
+    console.error('[PostImportAssignment] Fatal error:', err);
+    result.errors.push(`Fatal error: ${err.message}`);
+    return result;
+  }
+}
+
+/**
+ * Assigns the deterministic Problem Statement matching TEAM<N> → Problem #N to a Team.
+ *
  * Rules:
- * 1. FIRST TEAM -> First available Problem Statement (#1).
- * 2. NEXT TEAM -> Next available Problem Statement (#2, #3...).
- * 3. EXISTING TEAM -> If teamId already has an assignment, keeps it and returns early (Idempotent).
- * 4. ALREADY ASSIGNED -> Assigned problem statements are strictly skipped so each problem gets at most 1 team by default.
- * 5. ATOMIC / CONCURRENCY SAFE -> Uses Firestore runTransaction to prevent race conditions.
- * 6. METADATA PRESERVED -> Preserves all AI analysis, category, difficulty, organization, department, and prompt fields.
+ * 1. TEAM<N> → Problem Statement where order === N (deterministic, no fallback).
+ * 2. EXISTING TEAM → If teamId already has an assignment, keeps it and returns early (Idempotent).
+ * 3. NO FALLBACK → If Problem #N does not exist or is occupied, fails safely. Never assigns another problem.
+ * 4. ATOMIC / CONCURRENCY SAFE → Uses Firestore runTransaction to prevent race conditions.
+ * 5. METADATA PRESERVED → Preserves all AI analysis, category, difficulty, organization, department, and prompt fields.
  */
 export async function assignNextSequentialProblemToTeam(
   teamId: string,
