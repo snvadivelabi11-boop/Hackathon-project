@@ -18,7 +18,6 @@ import {
   Tabs,
   Badge,
   Tooltip,
-  Collapse,
 } from 'antd';
 import {
   CloudUploadOutlined,
@@ -32,7 +31,11 @@ import {
   RobotOutlined,
   BulbOutlined,
   ThunderboltOutlined,
-  InfoCircleOutlined,
+  BankOutlined,
+  TeamOutlined,
+  ApartmentOutlined,
+  SafetyCertificateOutlined,
+  SyncOutlined,
 } from '@ant-design/icons';
 import {
   analyzeCsvProblemStatements,
@@ -68,7 +71,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
 }) => {
   const { user } = useAuth();
 
-  // Workflow step: 0 = Upload, 1 = Local Parse, 2 = AI Review, 3 = Preview, 4 = Success
+  // Workflow step: 0 = Upload, 1 = Parse, 2 = AI Review, 3 = Preview, 4 = Success
   const [step, setStep] = useState<number>(0);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [rawText, setRawText] = useState<string>('');
@@ -83,6 +86,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
 
   // AI Review State
   const [aiReviewing, setAiReviewing] = useState<boolean>(false);
+  const [aiStatus, setAiStatus] = useState<'Processing' | 'Completed' | 'Failed' | 'Idle'>('Idle');
   const [aiError, setAiError] = useState<string | null>(null);
 
   // Saving State
@@ -100,6 +104,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
     setProgressPercent(0);
     setActiveTab('all');
     setAiReviewing(false);
+    setAiStatus('Idle');
     setAiError(null);
     setSaving(false);
     setSavedCount(0);
@@ -115,6 +120,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
     setUploadedFile(file);
     setAnalysisError(null);
     setAiError(null);
+    setAiStatus('Idle');
 
     try {
       const text = await extractTextFromFile(file);
@@ -148,13 +154,13 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
     setAnalyzing(true);
     setAnalysisError(null);
     setAiError(null);
-    setProgressPercent(30);
+    setProgressPercent(25);
 
     let localResult: CsvAnalysisResult;
 
     try {
       await new Promise((r) => setTimeout(r, 200));
-      setProgressPercent(60);
+      setProgressPercent(50);
 
       // 1. Perform deterministic CSV parsing, column detection, and duplicate checks
       localResult = analyzeCsvProblemStatements(rawText, uploadedFile.name, existingProblems);
@@ -168,17 +174,18 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
       return;
     }
 
-    // 2. If valid questions exist, run OpenRouter AI Analysis
+    // 2. If valid questions exist, run OpenRouter Claude Analysis
     if (localResult.validItemsToSave.length > 0) {
       setStep(2);
       setAiReviewing(true);
+      setAiStatus('Processing');
       try {
         const aiResponse = await requestCsvAiAnalysis(
           localResult.validItemsToSave,
           uploadedFile.name
         );
 
-        if (aiResponse && aiResponse.results) {
+        if (aiResponse && aiResponse.problems) {
           const enrichedQuestions = mergeAiAnalysisIntoQuestions(localResult.questions, aiResponse);
           const enrichedValid = mergeAiAnalysisIntoQuestions(localResult.validItemsToSave, aiResponse);
 
@@ -189,21 +196,24 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
             aiAnalysisPerformed: true,
             aiAnalysisSuccess: aiResponse.aiSuccess,
             aiAnalysisError: aiResponse.aiError,
+            aiModelUsed: aiResponse.aiModelUsed,
             summary: {
               ...localResult.summary,
-              aiAnalyzedCount: aiResponse.totalAnalyzed,
+              aiAnalyzedCount: aiResponse.totalProblems,
             },
           });
 
+          setAiStatus(aiResponse.aiSuccess ? 'Completed' : 'Failed');
           if (aiResponse.aiSuccess) {
-            message.success(`AI Quality Review complete: ${aiResponse.totalAnalyzed} problems assessed.`);
+            message.success(`AI Analysis complete: ${aiResponse.totalProblems} problem statements reviewed by Claude.`);
           } else {
-            message.warning('AI quality assessment encountered an issue, fallback data applied.');
+            message.warning('AI review encountered an issue, fallback validation applied.');
           }
         }
       } catch (err: any) {
         console.warn('[CsvAnalyzer] AI call failed, proceeding with local analysis:', err);
         setAiError(err.message || 'AI service temporarily unavailable.');
+        setAiStatus('Failed');
         setAnalysisResult({
           ...localResult,
           aiAnalysisPerformed: true,
@@ -212,10 +222,10 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
         });
       } finally {
         setAiReviewing(false);
-        setStep(3); // Proceed to Preview
+        setStep(3); // Proceed to Admin Review
       }
     } else {
-      setStep(3); // Proceed to Preview even if 0 valid items
+      setStep(3); // Proceed to Review even if 0 valid items
     }
   };
 
@@ -223,6 +233,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
     if (!analysisResult || analysisResult.validItemsToSave.length === 0) return;
     setStep(2);
     setAiReviewing(true);
+    setAiStatus('Processing');
     setAiError(null);
 
     try {
@@ -231,7 +242,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
         uploadedFile?.name || 'questions.csv'
       );
 
-      if (aiResponse && aiResponse.results) {
+      if (aiResponse && aiResponse.problems) {
         const enrichedQuestions = mergeAiAnalysisIntoQuestions(analysisResult.questions, aiResponse);
         const enrichedValid = mergeAiAnalysisIntoQuestions(analysisResult.validItemsToSave, aiResponse);
 
@@ -242,15 +253,18 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
           aiAnalysisPerformed: true,
           aiAnalysisSuccess: aiResponse.aiSuccess,
           aiAnalysisError: aiResponse.aiError,
+          aiModelUsed: aiResponse.aiModelUsed,
           summary: {
             ...analysisResult.summary,
-            aiAnalyzedCount: aiResponse.totalAnalyzed,
+            aiAnalyzedCount: aiResponse.totalProblems,
           },
         });
+        setAiStatus('Completed');
         message.success('AI Quality Review updated successfully.');
       }
     } catch (err: any) {
       setAiError(err.message || 'AI review failed.');
+      setAiStatus('Failed');
       message.error(`AI review failed: ${err.message}`);
     } finally {
       setAiReviewing(false);
@@ -317,40 +331,62 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
     );
   };
 
+  const getConfidenceTag = (conf?: number) => {
+    if (conf === undefined || conf === null) return <Tag>—</Tag>;
+    const pct = Math.round(conf * 100);
+    const color = pct >= 85 ? 'green' : pct >= 60 ? 'blue' : 'orange';
+    return (
+      <Tag color={color} style={{ fontWeight: 600, fontSize: '11px' }}>
+        {pct}% Confidence
+      </Tag>
+    );
+  };
+
   const columns = [
     {
-      title: 'No.',
-      dataIndex: 'questionNumber',
-      key: 'questionNumber',
-      width: 100,
-      render: (val: string, record: AnalyzedQuestionItem) => (
+      title: 'Order & ID',
+      dataIndex: 'sequence',
+      key: 'orderAndId',
+      width: 140,
+      render: (_: any, record: AnalyzedQuestionItem) => (
         <Space orientation="vertical" size={2}>
-          <Tag color="blue" style={{ fontWeight: 700 }}>
-            {val}
+          <Tag color="purple" style={{ fontWeight: 700, fontSize: '12px' }}>
+            Problem {record.order || record.sequence}
           </Tag>
-          <Text type="secondary" style={{ fontSize: '11px' }}>
+          <Tag color="blue" style={{ fontFamily: 'monospace', fontWeight: 600, fontSize: '11px' }}>
+            {record.statementId}
+          </Tag>
+          <Text type="secondary" style={{ fontSize: '10px' }}>
             Row {record.rowNumber}
           </Text>
         </Space>
       ),
     },
     {
-      title: 'Question / Problem Statement',
+      title: 'Problem Statement & Description',
       dataIndex: 'title',
       key: 'title',
       render: (text: string, record: AnalyzedQuestionItem) => (
         <div>
-          <Text strong style={{ color: record.status === 'VALID' ? '#0f172a' : '#64748b' }}>
+          <Text strong style={{ color: record.status === 'VALID' ? '#0f172a' : '#64748b', fontSize: '13px' }}>
             {text}
           </Text>
-          {record.description && record.description !== text && (
+          {record.description && (
             <Paragraph
               ellipsis={{ rows: 2, expandable: true, symbol: 'more' }}
               type="secondary"
-              style={{ fontSize: '12px', marginTop: 4, marginBottom: 0 }}
+              style={{ fontSize: '12px', marginTop: 4, marginBottom: 0, color: '#475569' }}
             >
               {record.description}
             </Paragraph>
+          )}
+          {record.analysis && (
+            <div style={{ marginTop: 6, padding: '4px 8px', background: '#f8fafc', borderRadius: 4, borderLeft: '3px solid #7c3aed' }}>
+              <Text type="secondary" style={{ fontSize: '11px', color: '#6b21a8' }}>
+                <RobotOutlined style={{ marginRight: 4 }} />
+                <strong>AI Analysis:</strong> {record.analysis}
+              </Text>
+            </div>
           )}
           {record.aiIssues && record.aiIssues.length > 0 && (
             <div style={{ marginTop: 6 }}>
@@ -374,12 +410,39 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
       ),
     },
     {
-      title: 'Category',
+      title: 'Org / Dept / Team',
+      key: 'orgDeptTeam',
+      width: 160,
+      render: (_: any, record: AnalyzedQuestionItem) => (
+        <Space orientation="vertical" size={3}>
+          {record.organization && (
+            <Tag icon={<BankOutlined />} color="blue" style={{ fontSize: '11px', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {record.organization}
+            </Tag>
+          )}
+          {record.department && (
+            <Tag icon={<ApartmentOutlined />} color="purple" style={{ fontSize: '11px', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {record.department}
+            </Tag>
+          )}
+          {record.team && (
+            <Tag icon={<TeamOutlined />} color="cyan" style={{ fontSize: '11px', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {record.team}
+            </Tag>
+          )}
+          {!record.organization && !record.department && !record.team && (
+            <Text type="secondary" style={{ fontSize: '11px' }}>—</Text>
+          )}
+        </Space>
+      ),
+    },
+    {
+      title: 'Category & Difficulty',
       dataIndex: 'category',
       key: 'category',
-      width: 130,
+      width: 140,
       render: (cat: string, record: AnalyzedQuestionItem) => (
-        <Space orientation="vertical" size={2}>
+        <Space orientation="vertical" size={3}>
           <Tag color="geekblue" style={{ fontSize: '12px' }}>
             {cat || record.aiDetectedCategory || 'General'}
           </Tag>
@@ -392,11 +455,16 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
       ),
     },
     {
-      title: 'AI Quality',
-      dataIndex: 'aiQualityScore',
-      key: 'aiQualityScore',
-      width: 120,
-      render: (_: any, record: AnalyzedQuestionItem) => getScoreTag(record.aiQualityScore),
+      title: 'AI Assessment',
+      dataIndex: 'confidence',
+      key: 'aiAssessment',
+      width: 130,
+      render: (_: any, record: AnalyzedQuestionItem) => (
+        <Space orientation="vertical" size={3}>
+          {getConfidenceTag(record.confidence)}
+          {getScoreTag(record.aiQualityScore)}
+        </Space>
+      ),
     },
     {
       title: 'Status',
@@ -433,14 +501,14 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
       },
     },
     {
-      title: 'Analysis Notes',
+      title: 'Notes',
       dataIndex: 'validationNotes',
       key: 'validationNotes',
-      width: 200,
+      width: 180,
       render: (note: string, record: AnalyzedQuestionItem) => (
         <Text
           type={record.status === 'VALID' ? 'secondary' : 'danger'}
-          style={{ fontSize: '12px' }}
+          style={{ fontSize: '11px' }}
         >
           {note}
         </Text>
@@ -465,7 +533,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
           onClose();
         }
       }}
-      width={1020}
+      width={1120}
       footer={null}
       destroyOnClose
       centered
@@ -476,8 +544,8 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
           items={[
             { title: 'Upload CSV' },
             { title: 'Parse & Validate' },
-            { title: 'AI Review' },
-            { title: 'Preview' },
+            { title: 'AI Analysis' },
+            { title: 'Admin Review' },
             { title: 'Distribution' },
           ]}
           style={{ marginBottom: 24 }}
@@ -488,7 +556,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
           <div>
             <Alert
               message="Upload Problem Statements CSV"
-              description="Upload your CSV file containing questions/problem statements. The Analyzer detects question columns, assigns clean sequential IDs (Question 1..N), runs OpenRouter AI quality analysis, and presents a full preview before saving."
+              description="Upload your CSV file containing problem statements (columns: Problem Statement ID, Category, Team, Organization, Department, Description). The Analyzer reads all rows, extracts metadata, executes OpenRouter Claude AI analysis, and presents the structured results for review."
               type="info"
               showIcon
               style={{ marginBottom: 20, borderRadius: 8 }}
@@ -512,7 +580,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
                 Click or drag CSV file to this area
               </p>
               <p className="ant-upload-hint" style={{ color: '#64748b' }}>
-                Accepts .csv with headers (e.g. question, problem_statement, title, category, description)
+                Supports columns: Problem Statement ID, Category, Team, Organization, Department, Description
               </p>
             </Dragger>
 
@@ -577,7 +645,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
                   Parsing CSV & Validating Columns...
                 </Title>
                 <Paragraph type="secondary" style={{ maxWidth: 450, margin: '0 auto 24px' }}>
-                  Detecting question headers, scanning for duplicates, and generating sequential numbering.
+                  Extracting IDs, categories, organizations, departments, and scanning for duplicates.
                 </Paragraph>
                 <Progress percent={progressPercent} status="active" strokeColor="#1677ff" style={{ maxWidth: 400 }} />
               </div>
@@ -606,28 +674,46 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
           <div style={{ textAlign: 'center', padding: '40px 16px' }}>
             <RobotOutlined style={{ fontSize: 56, color: '#7c3aed', marginBottom: 16 }} />
             <Title level={4} style={{ color: '#0f172a', marginBottom: 8 }}>
-              Running AI Quality Review (OpenRouter)...
+              Running Claude AI Problem Statement Analysis...
             </Title>
-            <Paragraph type="secondary" style={{ maxWidth: 500, margin: '0 auto 24px' }}>
-              Evaluating problem statement clarity, deliverables, categories, and potential ambiguities with OpenRouter AI.
+            <Paragraph type="secondary" style={{ maxWidth: 520, margin: '0 auto 24px' }}>
+              Analyzing actual problem statement descriptions, determining ordering, reasoning, confidence scores, and domain categories via OpenRouter Claude.
             </Paragraph>
             <Progress percent={75} status="active" strokeColor="#7c3aed" style={{ maxWidth: 400 }} />
           </div>
         )}
 
-        {/* STEP 3: PREVIEW & VALIDATION SUMMARY */}
+        {/* STEP 3: ADMIN REVIEW & PREVIEW */}
         {step === 3 && analysisResult && (
           <div>
+            {/* Status Bar */}
+            <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f8fafc', padding: '10px 16px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+              <Space size="middle">
+                <Text strong>AI Analysis Status:</Text>
+                {aiStatus === 'Processing' && <Tag icon={<SyncOutlined spin />} color="processing">Processing</Tag>}
+                {aiStatus === 'Completed' && <Tag icon={<CheckCircleOutlined />} color="success">Completed ({analysisResult.aiModelUsed || 'Claude 3.5 Sonnet'})</Tag>}
+                {aiStatus === 'Failed' && <Tag icon={<WarningOutlined />} color="error">Failed (Local Fallback Active)</Tag>}
+                {aiStatus === 'Idle' && <Tag color="default">Not Run</Tag>}
+              </Space>
+
+              <Space>
+                <Tag color="blue" style={{ fontSize: '12px' }}>
+                  Total Problems: <strong>{analysisResult.summary.validQuestions}</strong>
+                </Tag>
+              </Space>
+            </div>
+
+            {/* Statistics */}
             <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
               <Col xs={12} sm={6}>
                 <Card size="small" style={{ background: '#f8fafc', borderRadius: 8 }}>
-                  <Statistic title="Total Rows" value={analysisResult.summary.totalRows} />
+                  <Statistic title="Total CSV Rows" value={analysisResult.summary.totalRows} />
                 </Card>
               </Col>
               <Col xs={12} sm={6}>
                 <Card size="small" style={{ background: '#f0fdf4', borderColor: '#bbf7d0', borderRadius: 8 }}>
                   <Statistic
-                    title="Valid Questions"
+                    title="Valid Problems"
                     value={analysisResult.summary.validQuestions}
                     valueStyle={{ color: '#16a34a', fontWeight: 700 }}
                   />
@@ -636,7 +722,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
               <Col xs={12} sm={6}>
                 <Card size="small" style={{ background: '#faf5ff', borderColor: '#e9d5ff', borderRadius: 8 }}>
                   <Statistic
-                    title="AI Reviewed"
+                    title="AI Analyzed"
                     value={analysisResult.summary.aiAnalyzedCount || 0}
                     valueStyle={{ color: '#7c3aed', fontWeight: 700 }}
                     prefix={<RobotOutlined />}
@@ -659,13 +745,9 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
                 message={
                   <Space>
                     <RobotOutlined style={{ color: '#7c3aed' }} />
-                    <span style={{ fontWeight: 700 }}>AI Quality Review Complete:</span>
+                    <span style={{ fontWeight: 700 }}>AI Problem Analysis Complete:</span>
                     <span>
-                      Detected question column <Tag color="blue">"{analysisResult.detectedQuestionColumn}"</Tag> with{' '}
-                      <Text strong style={{ color: '#16a34a' }}>
-                        {analysisResult.validItemsToSave.length} valid questions
-                      </Text>{' '}
-                      ready to save as DRAFT.
+                      {analysisResult.validItemsToSave.length} problem statements analyzed and ordered with Claude AI. Ready to save as DRAFT.
                     </span>
                   </Space>
                 }
@@ -677,10 +759,10 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
 
             {analysisResult.aiAnalysisPerformed && !analysisResult.aiAnalysisSuccess && (
               <Alert
-                message="Local Validation Passed (AI Review Unavailable)"
+                message="Local Validation Active (AI Review Unavailable)"
                 description={
                   analysisResult.aiAnalysisError
-                    ? `Local parsing and duplicate checks succeeded. AI review error: ${analysisResult.aiAnalysisError}`
+                    ? `Local parsing and duplicate checks succeeded. AI error: ${analysisResult.aiAnalysisError}`
                     : 'Local parsing and duplicate checks succeeded. You can proceed with local data or retry AI review.'
                 }
                 type="warning"
@@ -698,7 +780,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
               activeKey={activeTab}
               onChange={setActiveTab}
               items={[
-                { key: 'all', label: `All Rows (${analysisResult.questions.length})` },
+                { key: 'all', label: `All Problem Statements (${analysisResult.questions.length})` },
                 {
                   key: 'valid',
                   label: (
@@ -748,7 +830,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
                   onClick={handleSaveAllValidated}
                   style={{ fontWeight: 700 }}
                 >
-                  Save All {analysisResult.validItemsToSave.length} Valid Problems
+                  Save All {analysisResult.validItemsToSave.length} Valid Problems (DRAFT)
                 </Button>
               </Space>
             </div>
@@ -762,9 +844,9 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
             <Title level={3} style={{ color: '#0f172a', marginBottom: 8 }}>
               🎉 {savedCount} Problem Statements Saved Successfully!
             </Title>
-            <Paragraph type="secondary" style={{ maxWidth: 520, margin: '0 auto 24px', fontSize: '14px' }}>
-              All validated questions have been saved as <Tag color="orange">DRAFT</Tag> in Firestore with clean
-              sequential identifiers (PS001, PS002...) and AI metadata. They are now ready for sequential distribution.
+            <Paragraph type="secondary" style={{ maxWidth: 540, margin: '0 auto 24px', fontSize: '14px' }}>
+              All validated problem statements have been saved as <Tag color="orange">DRAFT</Tag> in Firestore with complete
+              metadata (ID, Category, Team, Organization, Department, AI Analysis). They are ready for sequential distribution.
             </Paragraph>
 
             <Space size="middle">

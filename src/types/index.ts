@@ -69,6 +69,16 @@ export interface ProblemStatement {
   sequence?: number; // 1..N
   title: string;
   description: string;
+  category?: string;
+  difficulty?: 'EASY' | 'MEDIUM' | 'HARD';
+  team?: string | null;
+  organization?: string | null;
+  department?: string | null;
+  analysis?: string;
+  confidence?: number;
+  aiQualityScore?: number;
+  aiIssues?: string[];
+  aiSuggestions?: string[];
   requirements?: string[] | string;
   examples?: string;
   technicalGuidelines?: string;
@@ -95,6 +105,16 @@ export interface ParsedProblemStatement {
   sequence: number;
   title: string;
   description: string;
+  category?: string;
+  difficulty?: 'EASY' | 'MEDIUM' | 'HARD';
+  team?: string | null;
+  organization?: string | null;
+  department?: string | null;
+  analysis?: string;
+  confidence?: number;
+  aiQualityScore?: number;
+  aiIssues?: string[];
+  aiSuggestions?: string[];
   requirements?: string[];
   examples?: string;
   technicalGuidelines?: string;

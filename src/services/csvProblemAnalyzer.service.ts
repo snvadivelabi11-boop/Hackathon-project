@@ -3,7 +3,6 @@ import {
   doc,
   writeBatch,
   serverTimestamp,
-  getDocs,
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { db, auth, functions } from '../firebase/config';
@@ -11,12 +10,17 @@ import { ProblemStatement } from '../types';
 
 export interface AnalyzedQuestionItem {
   sequence: number;
+  order: number;
   questionNumber: string; // "Question 1", "Question 2"...
   statementId: string; // "PS001", "PS002"...
+  problemStatementId?: string; // Original ID from CSV if present
   originalText: string;
   title: string;
   description: string;
   category?: string;
+  team?: string | null;
+  organization?: string | null;
+  department?: string | null;
   difficulty?: 'EASY' | 'MEDIUM' | 'HARD';
   requirements?: string[];
   status: 'VALID' | 'DUPLICATE' | 'EMPTY' | 'INVALID';
@@ -25,6 +29,8 @@ export interface AnalyzedQuestionItem {
   rowNumber: number;
   // AI Analysis enrichments
   aiAnalyzed?: boolean;
+  analysis?: string;
+  confidence?: number;
   aiQualityScore?: number; // 1-10
   aiIssues?: string[];
   aiSuggestions?: string[];
@@ -41,29 +47,44 @@ export interface CsvValidationSummary {
   aiAnalyzedCount?: number;
 }
 
+export interface AnalyzedProblemOutputItem {
+  sequence: number;
+  order: number;
+  problemStatementId: string;
+  title: string;
+  description: string;
+  category: string;
+  team: string | null;
+  organization: string | null;
+  department: string | null;
+  analysis: string;
+  confidence: number;
+  isValid: boolean;
+  qualityScore: number;
+  issues: string[];
+  suggestions: string[];
+  difficulty: 'EASY' | 'MEDIUM' | 'HARD';
+}
+
 export interface CsvAiAnalysisResponse {
   success: boolean;
+  totalProblems: number;
+  aiModelUsed: string;
   aiSuccess: boolean;
   aiError?: string | null;
-  wasTruncated?: boolean;
-  totalAnalyzed: number;
-  results: Array<{
-    sequence: number;
-    isValid: boolean;
-    qualityScore: number;
-    issues: string[];
-    suggestions: string[];
-    detectedCategory: string;
-    detectedDifficulty: 'EASY' | 'MEDIUM' | 'HARD';
-  }>;
+  problems: AnalyzedProblemOutputItem[];
 }
 
 export interface CsvAnalysisResult {
   detectedQuestionColumn: string;
   detectedColumns: {
+    idKey?: string;
     questionKey: string;
     descriptionKey?: string;
     categoryKey?: string;
+    teamKey?: string;
+    orgKey?: string;
+    deptKey?: string;
     difficultyKey?: string;
   };
   summary: CsvValidationSummary;
@@ -73,6 +94,7 @@ export interface CsvAnalysisResult {
   aiAnalysisPerformed?: boolean;
   aiAnalysisSuccess?: boolean;
   aiAnalysisError?: string | null;
+  aiModelUsed?: string;
 }
 
 /**
@@ -159,19 +181,47 @@ export function parseRawCsvText(csvText: string): { headers: string[]; rows: str
 }
 
 /**
- * Common question column name aliases
+ * Common column aliases for problem statement CSVs
  */
+const ID_COLUMN_ALIASES = [
+  'problem statement id',
+  'problem_statement_id',
+  'statement_id',
+  'statement id',
+  'problem_id',
+  'problem id',
+  'ps_id',
+  'ps id',
+  'psid',
+  'ps_no',
+  'ps no',
+  'id',
+  'code',
+  'number',
+  'sl_no',
+  'sl no',
+  's_no',
+  'sno',
+];
+
 const QUESTION_COLUMN_ALIASES = [
+  'problem statement description',
+  'problem_statement_description',
+  'problem statement',
+  'problem_statement',
+  'problemstatement',
+  'problem_statements',
+  'problem statements',
+  'problem description',
+  'problem_description',
   'question',
   'questions',
   'problem',
   'problems',
-  'problem_statement',
-  'problemstatement',
-  'problem_statements',
   'statement',
   'statements',
   'problem_title',
+  'problem title',
   'problemtitle',
   'title',
   'challenge',
@@ -182,16 +232,23 @@ const QUESTION_COLUMN_ALIASES = [
   'prompts',
   'topic',
   'description',
+  'details',
+  'overview',
+  'summary',
 ];
 
 const DESCRIPTION_COLUMN_ALIASES = [
+  'problem statement description',
+  'problem_statement_description',
   'description',
   'problem_description',
+  'problem description',
   'details',
   'overview',
   'summary',
   'body',
   'specification',
+  'statement',
 ];
 
 const CATEGORY_COLUMN_ALIASES = [
@@ -203,6 +260,44 @@ const CATEGORY_COLUMN_ALIASES = [
   'field',
   'tag',
   'tags',
+  'area',
+  'stream',
+];
+
+const TEAM_COLUMN_ALIASES = [
+  'team',
+  'team name',
+  'team_name',
+  'target team',
+  'target_team',
+  'assigned team',
+  'assigned_team',
+  'group',
+  'team_id',
+  'assigned_to',
+];
+
+const ORG_COLUMN_ALIASES = [
+  'organization',
+  'org',
+  'company',
+  'sponsor',
+  'client',
+  'partner',
+  'institution',
+  'source_org',
+  'agency',
+  'enterprise',
+];
+
+const DEPT_COLUMN_ALIASES = [
+  'department',
+  'dept',
+  'unit',
+  'division',
+  'branch',
+  'sub_unit',
+  'function',
 ];
 
 const DIFFICULTY_COLUMN_ALIASES = [
@@ -210,76 +305,153 @@ const DIFFICULTY_COLUMN_ALIASES = [
   'level',
   'complexity',
   'tier',
+  'grade',
 ];
 
 /**
- * Detects question and supplementary columns from CSV headers
+ * Detects question, ID, category, team, organization, department, and difficulty columns from CSV headers
  */
 export function detectCsvColumns(headers: string[]): {
+  idIndex: number;
+  idKey?: string;
   questionIndex: number;
   questionKey: string;
   descriptionIndex: number;
+  descriptionKey?: string;
   categoryIndex: number;
+  categoryKey?: string;
+  teamIndex: number;
+  teamKey?: string;
+  orgIndex: number;
+  orgKey?: string;
+  deptIndex: number;
+  deptKey?: string;
   difficultyIndex: number;
+  difficultyKey?: string;
 } {
+  let idIndex = -1;
+  let idKey: string | undefined;
   let questionIndex = -1;
   let questionKey = '';
   let descriptionIndex = -1;
+  let descriptionKey: string | undefined;
   let categoryIndex = -1;
+  let categoryKey: string | undefined;
+  let teamIndex = -1;
+  let teamKey: string | undefined;
+  let orgIndex = -1;
+  let orgKey: string | undefined;
+  let deptIndex = -1;
+  let deptKey: string | undefined;
   let difficultyIndex = -1;
+  let difficultyKey: string | undefined;
 
-  // 1. Match Question Column (Highest priority)
-  for (const alias of QUESTION_COLUMN_ALIASES) {
+  // 1. Match ID Column
+  for (const alias of ID_COLUMN_ALIASES) {
     const idx = headers.findIndex((h) => h === alias || h.replace(/[^a-z0-9]/g, '') === alias.replace(/[^a-z0-9]/g, ''));
     if (idx >= 0) {
-      questionIndex = idx;
-      questionKey = headers[idx];
+      idIndex = idx;
+      idKey = headers[idx];
       break;
     }
   }
 
-  // Fallback match: column header containing "question" or "problem"
-  if (questionIndex === -1) {
-    const idx = headers.findIndex((h) => h.includes('question') || h.includes('problem') || h.includes('statement') || h.includes('title'));
-    if (idx >= 0) {
-      questionIndex = idx;
-      questionKey = headers[idx];
-    }
-  }
-
-  // 2. Match Description Column
-  for (const alias of DESCRIPTION_COLUMN_ALIASES) {
-    const idx = headers.findIndex((h, i) => i !== questionIndex && (h === alias || h.includes(alias)));
-    if (idx >= 0) {
-      descriptionIndex = idx;
-      break;
-    }
-  }
-
-  // 3. Match Category Column
+  // 2. Match Category Column
   for (const alias of CATEGORY_COLUMN_ALIASES) {
-    const idx = headers.findIndex((h, i) => i !== questionIndex && i !== descriptionIndex && (h === alias || h.includes(alias)));
+    const idx = headers.findIndex((h, i) => i !== idIndex && (h === alias || h.replace(/[^a-z0-9]/g, '') === alias.replace(/[^a-z0-9]/g, '')));
     if (idx >= 0) {
       categoryIndex = idx;
+      categoryKey = headers[idx];
       break;
     }
   }
 
-  // 4. Match Difficulty Column
+  // 3. Match Team Column
+  for (const alias of TEAM_COLUMN_ALIASES) {
+    const idx = headers.findIndex((h, i) => i !== idIndex && i !== categoryIndex && (h === alias || h.replace(/[^a-z0-9]/g, '') === alias.replace(/[^a-z0-9]/g, '')));
+    if (idx >= 0) {
+      teamIndex = idx;
+      teamKey = headers[idx];
+      break;
+    }
+  }
+
+  // 4. Match Organization Column
+  for (const alias of ORG_COLUMN_ALIASES) {
+    const idx = headers.findIndex((h, i) => i !== idIndex && i !== categoryIndex && i !== teamIndex && (h === alias || h.replace(/[^a-z0-9]/g, '') === alias.replace(/[^a-z0-9]/g, '')));
+    if (idx >= 0) {
+      orgIndex = idx;
+      orgKey = headers[idx];
+      break;
+    }
+  }
+
+  // 5. Match Department Column
+  for (const alias of DEPT_COLUMN_ALIASES) {
+    const idx = headers.findIndex((h, i) => i !== idIndex && i !== categoryIndex && i !== teamIndex && i !== orgIndex && (h === alias || h.replace(/[^a-z0-9]/g, '') === alias.replace(/[^a-z0-9]/g, '')));
+    if (idx >= 0) {
+      deptIndex = idx;
+      deptKey = headers[idx];
+      break;
+    }
+  }
+
+  // 6. Match Difficulty Column
   for (const alias of DIFFICULTY_COLUMN_ALIASES) {
-    const idx = headers.findIndex((h, i) => i !== questionIndex && (h === alias || h.includes(alias)));
+    const idx = headers.findIndex((h, i) => i !== idIndex && (h === alias || h.replace(/[^a-z0-9]/g, '') === alias.replace(/[^a-z0-9]/g, '')));
     if (idx >= 0) {
       difficultyIndex = idx;
+      difficultyKey = headers[idx];
+      break;
+    }
+  }
+
+  // 7. Match Question / Title / Problem Statement Column (Primary)
+  for (const alias of QUESTION_COLUMN_ALIASES) {
+    const idx = headers.findIndex((h, i) => i !== idIndex && i !== categoryIndex && i !== teamIndex && i !== orgIndex && i !== deptIndex && i !== difficultyIndex && (h === alias || h.replace(/[^a-z0-9]/g, '') === alias.replace(/[^a-z0-9]/g, '')));
+    if (idx >= 0) {
+      questionIndex = idx;
+      questionKey = headers[idx];
+      break;
+    }
+  }
+
+  // Fallback match for question column
+  if (questionIndex === -1) {
+    const idx = headers.findIndex((h, i) => i !== idIndex && (h.includes('question') || h.includes('problem') || h.includes('statement') || h.includes('title') || h.includes('desc')));
+    if (idx >= 0) {
+      questionIndex = idx;
+      questionKey = headers[idx];
+    }
+  }
+
+  // 8. Match separate Description Column if distinct from Question Column
+  for (const alias of DESCRIPTION_COLUMN_ALIASES) {
+    const idx = headers.findIndex((h, i) => i !== idIndex && i !== questionIndex && i !== categoryIndex && i !== teamIndex && i !== orgIndex && i !== deptIndex && (h === alias || h.includes(alias)));
+    if (idx >= 0) {
+      descriptionIndex = idx;
+      descriptionKey = headers[idx];
       break;
     }
   }
 
   return {
+    idIndex,
+    idKey,
     questionIndex,
     questionKey,
     descriptionIndex,
+    descriptionKey,
     categoryIndex,
+    categoryKey,
+    teamIndex,
+    teamKey,
+    orgIndex,
+    orgKey,
+    deptIndex,
+    deptKey,
     difficultyIndex,
+    difficultyKey,
   };
 }
 
@@ -304,16 +476,27 @@ export function analyzeCsvProblemStatements(
   const { headers, rows } = parseRawCsvText(rawCsvText);
 
   const {
+    idIndex,
+    idKey,
     questionIndex,
     questionKey,
     descriptionIndex,
+    descriptionKey,
     categoryIndex,
+    categoryKey,
+    teamIndex,
+    teamKey,
+    orgIndex,
+    orgKey,
+    deptIndex,
+    deptKey,
     difficultyIndex,
+    difficultyKey,
   } = detectCsvColumns(headers);
 
   if (questionIndex === -1) {
     throw new Error(
-      `CSV analysis failed: Question column not found.\nDetected headers: [${headers.join(', ')}].\nSupported headers: question, problem, problem_statement, statement, title, challenge, description.`
+      `CSV analysis failed: Question or Problem Statement column not found.\nDetected headers: [${headers.join(', ')}].\nSupported headers: problem_statement_id, category, team, organization, department, problem_statement_description, question, problem, title, description.`
     );
   }
 
@@ -321,6 +504,9 @@ export function analyzeCsvProblemStatements(
   existingProblems.forEach((p) => {
     if (p && p.title) {
       existingNormalizedMap.set(normalizeQuestionText(p.title), p.title);
+    }
+    if (p && p.description && p.description !== p.title) {
+      existingNormalizedMap.set(normalizeQuestionText(p.description), p.title);
     }
   });
 
@@ -344,14 +530,29 @@ export function analyzeCsvProblemStatements(
       return;
     }
 
+    const rawId = idIndex >= 0 ? sanitizeCsvCell(row[idIndex] || '') : undefined;
     const rawQuestion = row[questionIndex] || '';
     const cleanQuestion = sanitizeCsvCell(rawQuestion);
     const rawDescription = descriptionIndex >= 0 ? sanitizeCsvCell(row[descriptionIndex] || '') : '';
     const rawCategory = categoryIndex >= 0 ? sanitizeCsvCell(row[categoryIndex] || '') : undefined;
+    const rawTeam = teamIndex >= 0 ? sanitizeCsvCell(row[teamIndex] || '') : undefined;
+    const rawOrg = orgIndex >= 0 ? sanitizeCsvCell(row[orgIndex] || '') : undefined;
+    const rawDept = deptIndex >= 0 ? sanitizeCsvCell(row[deptIndex] || '') : undefined;
     const rawDifficulty = difficultyIndex >= 0 ? sanitizeCsvCell(row[difficultyIndex] || '') : undefined;
 
+    // Compose final description & title
+    let title = cleanQuestion;
+    let description = rawDescription || cleanQuestion;
+    if (descriptionIndex >= 0 && rawDescription && questionIndex !== descriptionIndex) {
+      title = cleanQuestion;
+      description = rawDescription;
+    } else if (cleanQuestion.length > 80 && !title.includes('\n')) {
+      title = cleanQuestion.slice(0, 77) + '...';
+      description = cleanQuestion;
+    }
+
     const questionNumber = `Question ${currentSequence}`;
-    const statementId = `PS${String(currentSequence).padStart(3, '0')}`;
+    const statementId = rawId && rawId.length > 0 ? rawId : `PS${String(currentSequence).padStart(3, '0')}`;
 
     // 1. Empty Question Validation
     if (!cleanQuestion || cleanQuestion.trim().length === 0) {
@@ -359,13 +560,19 @@ export function analyzeCsvProblemStatements(
       invalidCount++;
       questions.push({
         sequence: currentSequence,
+        order: currentSequence,
         questionNumber,
         statementId,
+        problemStatementId: rawId,
         originalText: rawQuestion || '[EMPTY]',
-        title: `[Empty Question Row ${rowNumber}]`,
+        title: `[Empty Row ${rowNumber}]`,
         description: rawDescription,
+        category: rawCategory,
+        team: rawTeam || null,
+        organization: rawOrg || null,
+        department: rawDept || null,
         status: 'EMPTY',
-        validationNotes: `Row ${rowNumber}: Question text is missing or empty.`,
+        validationNotes: `Row ${rowNumber}: Problem statement text is missing or empty.`,
         rowNumber,
       });
       currentSequence++;
@@ -380,14 +587,19 @@ export function analyzeCsvProblemStatements(
       invalidCount++;
       questions.push({
         sequence: currentSequence,
+        order: currentSequence,
         questionNumber,
         statementId,
+        problemStatementId: rawId,
         originalText: rawQuestion,
-        title: cleanQuestion,
-        description: rawDescription || cleanQuestion,
+        title,
+        description,
         category: rawCategory,
+        team: rawTeam || null,
+        organization: rawOrg || null,
+        department: rawDept || null,
         status: 'DUPLICATE',
-        validationNotes: `Duplicate: Same question already appears earlier in this CSV.`,
+        validationNotes: `Duplicate: Same problem statement appears earlier in this CSV.`,
         rowNumber,
       });
       currentSequence++;
@@ -403,33 +615,44 @@ export function analyzeCsvProblemStatements(
       invalidCount++;
       questions.push({
         sequence: currentSequence,
+        order: currentSequence,
         questionNumber,
         statementId,
+        problemStatementId: rawId,
         originalText: rawQuestion,
-        title: cleanQuestion,
-        description: rawDescription || cleanQuestion,
+        title,
+        description,
         category: rawCategory,
+        team: rawTeam || null,
+        organization: rawOrg || null,
+        department: rawDept || null,
         status: 'DUPLICATE',
         isExistingDuplicate: true,
-        validationNotes: `Duplicate: Question already exists in database as "${existingMatch}".`,
+        validationNotes: `Duplicate: Already exists in database as "${existingMatch}".`,
         rowNumber,
       });
       currentSequence++;
       return;
     }
 
-    // 4. Content length validation (e.g. at least 3 characters)
+    // 4. Content length validation (min 3 characters)
     if (cleanQuestion.trim().length < 3) {
       invalidCount++;
       questions.push({
         sequence: currentSequence,
+        order: currentSequence,
         questionNumber,
         statementId,
+        problemStatementId: rawId,
         originalText: rawQuestion,
-        title: cleanQuestion,
-        description: rawDescription || cleanQuestion,
+        title,
+        description,
+        category: rawCategory,
+        team: rawTeam || null,
+        organization: rawOrg || null,
+        department: rawDept || null,
         status: 'INVALID',
-        validationNotes: `Question text is too short (min 3 characters).`,
+        validationNotes: `Problem statement text is too short (min 3 characters).`,
         rowNumber,
       });
       currentSequence++;
@@ -449,15 +672,20 @@ export function analyzeCsvProblemStatements(
     validCount++;
     questions.push({
       sequence: currentSequence,
+      order: currentSequence,
       questionNumber,
       statementId,
+      problemStatementId: rawId,
       originalText: rawQuestion,
-      title: cleanQuestion,
-      description: rawDescription || cleanQuestion,
+      title,
+      description,
       category: rawCategory,
+      team: rawTeam || null,
+      organization: rawOrg || null,
+      department: rawDept || null,
       difficulty: parsedDifficulty,
       status: 'VALID',
-      validationNotes: 'VALID: Ready to import.',
+      validationNotes: 'VALID: Ready for AI review.',
       rowNumber,
     });
 
@@ -469,10 +697,14 @@ export function analyzeCsvProblemStatements(
   return {
     detectedQuestionColumn: questionKey,
     detectedColumns: {
+      idKey,
       questionKey,
-      descriptionKey: descriptionIndex >= 0 ? headers[descriptionIndex] : undefined,
-      categoryKey: categoryIndex >= 0 ? headers[categoryIndex] : undefined,
-      difficultyKey: difficultyIndex >= 0 ? headers[difficultyIndex] : undefined,
+      descriptionKey,
+      categoryKey,
+      teamKey,
+      orgKey,
+      deptKey,
+      difficultyKey,
     },
     summary: {
       totalRows: rows.length,
@@ -488,7 +720,7 @@ export function analyzeCsvProblemStatements(
 }
 
 /**
- * Calls Cloud Function analyzeCsvProblemsAI to perform AI review on parsed CSV questions
+ * Calls Cloud Function analyzeCsvProblemsAI to perform Claude OpenRouter AI analysis on parsed CSV questions
  */
 export async function requestCsvAiAnalysis(
   validQuestions: AnalyzedQuestionItem[],
@@ -499,9 +731,15 @@ export async function requestCsvAiAnalysis(
     fileName,
     questions: validQuestions.map((q) => ({
       sequence: q.sequence,
+      rowNumber: q.rowNumber,
+      problemStatementId: q.problemStatementId || q.statementId,
+      category: q.category,
+      team: q.team,
+      organization: q.organization,
+      department: q.department,
       title: q.title,
       description: q.description || q.title,
-      category: q.category,
+      difficulty: q.difficulty,
     })),
   };
   const res = await fn(payload);
@@ -515,9 +753,9 @@ export function mergeAiAnalysisIntoQuestions(
   questions: AnalyzedQuestionItem[],
   aiResponse: CsvAiAnalysisResponse
 ): AnalyzedQuestionItem[] {
-  if (!aiResponse || !aiResponse.results) return questions;
-  const resultMap = new Map<number, typeof aiResponse.results[0]>();
-  aiResponse.results.forEach((r) => resultMap.set(r.sequence, r));
+  if (!aiResponse || !aiResponse.problems) return questions;
+  const resultMap = new Map<number, AnalyzedProblemOutputItem>();
+  aiResponse.problems.forEach((p) => resultMap.set(p.sequence, p));
 
   return questions.map((q) => {
     const aiItem = resultMap.get(q.sequence);
@@ -531,15 +769,22 @@ export function mergeAiAnalysisIntoQuestions(
     return {
       ...q,
       aiAnalyzed: true,
+      order: aiItem.order || q.sequence,
+      statementId: aiItem.problemStatementId || q.statementId,
+      problemStatementId: aiItem.problemStatementId || q.problemStatementId || q.statementId,
+      title: aiItem.title || q.title,
+      description: aiItem.description || q.description,
+      category: q.category || (aiItem.category !== 'General' ? aiItem.category : q.category),
+      team: q.team || aiItem.team,
+      organization: q.organization || aiItem.organization,
+      department: q.department || aiItem.department,
+      analysis: aiItem.analysis,
+      confidence: aiItem.confidence,
       aiQualityScore: aiItem.qualityScore,
       aiIssues: aiItem.issues,
       aiSuggestions: aiItem.suggestions,
-      aiDetectedCategory: aiItem.detectedCategory,
-      aiDetectedDifficulty: aiItem.detectedDifficulty,
+      difficulty: q.difficulty || aiItem.difficulty,
       validationNotes: notesParts.join(' | '),
-      // If AI detected a category and user didn't provide one, enrich category
-      category: q.category || (aiItem.detectedCategory !== 'General' ? aiItem.detectedCategory : q.category),
-      difficulty: q.difficulty || aiItem.detectedDifficulty,
     };
   });
 }
@@ -565,22 +810,26 @@ export async function saveAnalyzedProblemsToFirestore(
   const adminEmail = user?.email || currentUser?.email || 'admin@hackathon.org';
 
   validQuestions.forEach((item, idx) => {
-    const seq = idx + 1;
-    const docId = `PS${String(seq).padStart(3, '0')}`;
+    const seq = item.sequence || idx + 1;
+    const docId = item.problemStatementId || `PS${String(seq).padStart(3, '0')}`;
     const docRef = doc(db, 'problemStatements', docId);
 
     const docData: any = {
       statementId: docId,
+      problemStatementId: docId,
       title: item.title,
       description: item.description,
       category: item.category || 'General',
+      team: item.team || null,
+      organization: item.organization || null,
+      department: item.department || null,
       difficulty: item.difficulty || 'MEDIUM',
       requirements: item.requirements || [],
       sequence: seq,
-      order: seq,
+      order: item.order || seq,
       status: 'DRAFT', // Draft-first: hidden from users until published
       sourceFile: fileName,
-      sourceType: 'CSV_ANALYZER',
+      sourceType: 'CSV_AI_ANALYZER',
       originalQuestionText: item.originalText,
       createdAt: now,
       updatedAt: now,
@@ -591,6 +840,8 @@ export async function saveAnalyzedProblemsToFirestore(
     if (item.aiAnalyzed) {
       docData.aiAnalyzed = true;
       docData.aiProcessed = true;
+      if (item.analysis) docData.analysis = item.analysis;
+      if (item.confidence !== undefined) docData.confidence = item.confidence;
       if (item.aiQualityScore !== undefined) docData.aiQualityScore = item.aiQualityScore;
       if (item.aiIssues && item.aiIssues.length > 0) docData.aiIssues = item.aiIssues;
       if (item.aiSuggestions && item.aiSuggestions.length > 0) docData.aiSuggestions = item.aiSuggestions;
@@ -611,7 +862,7 @@ export async function saveAnalyzedProblemsToFirestore(
     importedBy: adminEmail,
     uploadedAt: now,
     status: 'COMPLETED',
-    sourceType: 'CSV_ANALYZER',
+    sourceType: 'CSV_AI_ANALYZER',
   });
 
   // Save Audit Log
@@ -620,7 +871,7 @@ export async function saveAnalyzedProblemsToFirestore(
     id: auditRef.id,
     adminUid,
     adminEmail,
-    action: 'CSV Problem Statements Analyzed & Imported',
+    action: 'CSV Problem Statements Analyzed with AI & Imported',
     targetType: 'problem',
     targetId: 'problemStatements_batch',
     timestamp: new Date().toISOString(),
