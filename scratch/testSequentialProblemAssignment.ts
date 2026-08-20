@@ -46,7 +46,7 @@ function assignNextSequentialProblemInMemory(
 } {
   if (!teamId) return { success: false, assigned: false, message: 'Invalid team ID' };
 
-  // Rule 3: Existing team keeps its assignment
+  // Rule 3: Existing team keeps its assignment in ANY collection
   if (db.teamProblemAssignments.has(teamId)) {
     const existing = db.teamProblemAssignments.get(teamId)!;
     return {
@@ -57,6 +57,18 @@ function assignNextSequentialProblemInMemory(
       problemSequence: existing.problemSequence,
       statementTitle: existing.statementTitle,
       message: `Team ${teamId} already has assigned problem ${existing.statementId}.`,
+    };
+  }
+
+  if (db.teams.has(teamId) && db.teams.get(teamId)?.assignedStatementId) {
+    const existing = db.teams.get(teamId)!;
+    return {
+      success: true,
+      assigned: false,
+      alreadyAssigned: true,
+      statementId: existing.assignedStatementId,
+      statementTitle: existing.assignedStatementTitle,
+      message: `Team ${teamId} already has assigned problem ${existing.assignedStatementId}.`,
     };
   }
 
@@ -74,21 +86,61 @@ function assignNextSequentialProblemInMemory(
     return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
   });
 
-  // Occupied statement IDs
+  // Extract all occupied statement IDs using variant normalization
   const occupiedIds = new Set<string>();
+
+  const markOccupied = (rawId: string | number | null | undefined) => {
+    if (!rawId) return;
+    const str = String(rawId).trim().toLowerCase();
+    occupiedIds.add(str);
+    const psMatch = str.match(/^ps\s*0*(\d+)$/i);
+    if (psMatch) {
+      const num = parseInt(psMatch[1], 10);
+      occupiedIds.add(String(num));
+      occupiedIds.add(`ps${num}`);
+      occupiedIds.add(`ps${String(num).padStart(3, '0')}`);
+    } else {
+      const numMatch = str.match(/^0*(\d+)$/);
+      if (numMatch) {
+        const num = parseInt(numMatch[1], 10);
+        occupiedIds.add(String(num));
+        occupiedIds.add(`ps${num}`);
+        occupiedIds.add(`ps${String(num).padStart(3, '0')}`);
+      }
+    }
+  };
+
   db.teamProblemAssignments.forEach((assign) => {
     if (assign.statementId && assign.teamId !== teamId) {
-      occupiedIds.add(assign.statementId);
+      markOccupied(assign.statementId);
+      markOccupied(assign.problemStatementId);
     }
   });
+
+  db.teams.forEach((t) => {
+    if (t.teamId !== teamId && t.assignedStatementId) {
+      markOccupied(t.assignedStatementId);
+    }
+  });
+
   allStatements.forEach((st) => {
-    if (st.assignedTeamId && st.assignedTeamId !== teamId && st.assignedTeamId.trim().length > 0) {
-      occupiedIds.add(st.statementId);
+    const hasAssigned = (st.assignedTeamId && st.assignedTeamId !== teamId && st.assignedTeamId.trim().length > 0) ||
+      (Array.isArray(st.assignedTeamIds) && st.assignedTeamIds.some((tid) => tid !== teamId)) ||
+      (Array.isArray(st.assignedTeams) && st.assignedTeams.some((t: any) => (t.teamId || t) !== teamId));
+
+    if (hasAssigned || ((st.status === 'PUBLISHED' || st.status === 'published') && st.assignedTeamId)) {
+      markOccupied(st.statementId);
+      markOccupied(st.problemStatementId);
     }
   });
 
   // Find next unassigned
-  const nextProblem = allStatements.find((st) => !occupiedIds.has(st.statementId));
+  const nextProblem = allStatements.find((st) => {
+    const idLower = st.statementId.toLowerCase();
+    const pidLower = (st.problemStatementId || '').toLowerCase();
+    return !occupiedIds.has(idLower) && (!pidLower || !occupiedIds.has(pidLower));
+  });
+
   if (!nextProblem) {
     return { success: true, assigned: false, message: 'All problem statements are occupied' };
   }
@@ -324,6 +376,9 @@ async function runTests() {
     assignedAt: new Date().toISOString(),
     status: 'PUBLISHED',
   });
+  if (db.teams.has('TEAM003')) {
+    db.teams.get('TEAM003')!.assignedStatementId = 'PS008';
+  }
 
   // Now create a new team TEAM005
   // Since PS003 was freed, the next available unassigned is PS003!
@@ -495,6 +550,134 @@ async function runTests() {
   assert(check45.statementId === 'PSB', 'TEAM045 stays on PSB');
   const check44 = assignNextSequentialProblemInMemory(dbProd, 'TEAM044', 'Existing Team 044 User 2');
   assert(check44.statementId === 'PSC', 'TEAM044 stays on PSC');
+
+  // -------------------------------------------------------------
+  // Test 11: Exact Master Scenario from User Prompt
+  // -------------------------------------------------------------
+  console.log('\n--- Test Group 11: Exact Master Scenario (TEAM046, TEAM045, TEAM047, TEAM048, TEAM049) ---');
+  const dbScenario = createMockDb();
+
+  // Problem #1 -> assigned to TEAM046 -> Published/used
+  dbScenario.problemStatements.set('PS001', {
+    statementId: 'PS001',
+    sequence: 1,
+    order: 1,
+    title: 'Problem #1 Title',
+    description: 'Desc 1',
+    assignedTeamId: 'TEAM046',
+    status: 'PUBLISHED',
+    createdAt: '',
+    updatedAt: '',
+  });
+  dbScenario.teamProblemAssignments.set('TEAM046', {
+    teamId: 'TEAM046',
+    statementId: 'PS001',
+    statementTitle: 'Problem #1 Title',
+    description: 'Desc 1',
+    assignedAt: '',
+    status: 'PUBLISHED',
+  });
+  dbScenario.teams.set('TEAM046', {
+    teamId: 'TEAM046',
+    teamName: 'Team 046',
+    assignedStatementId: 'PS001',
+    assignedStatementTitle: 'Problem #1 Title',
+  });
+
+  // Problem #2 -> assigned to TEAM045 -> Published/used
+  dbScenario.problemStatements.set('PS002', {
+    statementId: 'PS002',
+    sequence: 2,
+    order: 2,
+    title: 'Problem #2 Title',
+    description: 'Desc 2',
+    assignedTeamId: 'TEAM045',
+    status: 'PUBLISHED',
+    createdAt: '',
+    updatedAt: '',
+  });
+  dbScenario.teamProblemAssignments.set('TEAM045', {
+    teamId: 'TEAM045',
+    statementId: 'PS002',
+    statementTitle: 'Problem #2 Title',
+    description: 'Desc 2',
+    assignedAt: '',
+    status: 'PUBLISHED',
+  });
+  dbScenario.teams.set('TEAM045', {
+    teamId: 'TEAM045',
+    teamName: 'Team 045',
+    assignedStatementId: 'PS002',
+    assignedStatementTitle: 'Problem #2 Title',
+  });
+
+  // Problem #3 -> NOT assigned -> NOT published
+  dbScenario.problemStatements.set('PS003', {
+    statementId: 'PS003',
+    sequence: 3,
+    order: 3,
+    title: 'Problem #3 Title',
+    description: 'Desc 3',
+    status: 'DRAFT',
+    assignedTeamId: null,
+    createdAt: '',
+    updatedAt: '',
+  });
+
+  // Problem #4 -> NOT assigned -> NOT published
+  dbScenario.problemStatements.set('PS004', {
+    statementId: 'PS004',
+    sequence: 4,
+    order: 4,
+    title: 'Problem #4 Title',
+    description: 'Desc 4',
+    status: 'DRAFT',
+    assignedTeamId: null,
+    createdAt: '',
+    updatedAt: '',
+  });
+
+  // Problem #5 -> NOT assigned -> NOT published
+  dbScenario.problemStatements.set('PS005', {
+    statementId: 'PS005',
+    sequence: 5,
+    order: 5,
+    title: 'Problem #5 Title',
+    description: 'Desc 5',
+    status: 'DRAFT',
+    assignedTeamId: null,
+    createdAt: '',
+    updatedAt: '',
+  });
+
+  // Step 1: Create TEAM047 -> MUST receive Problem #3 (PS003)
+  const res47 = assignNextSequentialProblemInMemory(dbScenario, 'TEAM047', 'Team 047');
+  assert(res47.statementId === 'PS003', 'TEAM047 receives Problem #3 (PS003)', `Got ${res47.statementId}`);
+  assert(res47.problemSequence === 3, 'TEAM047 sequence is 3');
+
+  // Step 2: Create TEAM048 -> MUST receive Problem #4 (PS004)
+  const res48 = assignNextSequentialProblemInMemory(dbScenario, 'TEAM048', 'Team 048');
+  assert(res48.statementId === 'PS004', 'TEAM048 receives Problem #4 (PS004)', `Got ${res48.statementId}`);
+  assert(res48.problemSequence === 4, 'TEAM048 sequence is 4');
+
+  // Step 3: Create another account under TEAM047 -> MUST STILL receive Problem #3 (PS003)
+  const res47User2 = assignNextSequentialProblemInMemory(dbScenario, 'TEAM047', 'Team 047 User 2');
+  assert(res47User2.statementId === 'PS003', 'TEAM047 User 2 STILL receives Problem #3 (PS003)');
+  assert(res47User2.alreadyAssigned === true, 'TEAM047 marked as alreadyAssigned');
+
+  // Step 4: Create TEAM049 -> MUST receive Problem #5 (PS005)
+  const res49 = assignNextSequentialProblemInMemory(dbScenario, 'TEAM049', 'Team 049');
+  assert(res49.statementId === 'PS005', 'TEAM049 receives Problem #5 (PS005)', `Got ${res49.statementId}`);
+  assert(res49.problemSequence === 5, 'TEAM049 sequence is 5');
+
+  // -------------------------------------------------------------
+  // Test 12: No Available Problem Statements Handled Safely
+  // -------------------------------------------------------------
+  console.log('\n--- Test Group 12: No Available Problem Statements ---');
+  // All 5 problem statements in dbScenario are now assigned
+  const resExhausted = assignNextSequentialProblemInMemory(dbScenario, 'TEAM050', 'Team 050');
+  assert(resExhausted.assigned === false, 'Cannot allocate when problem catalog is exhausted');
+  assert(resExhausted.message.includes('occupied') || resExhausted.message.includes('assigned'), 'Safe exhaustion message returned');
 
   // -------------------------------------------------------------
   // SUMMARY

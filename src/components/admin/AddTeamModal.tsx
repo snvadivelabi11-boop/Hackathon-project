@@ -260,7 +260,7 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
             </Row>
 
             {/* Default Problem Statement Preview (Auto Sequential) */}
-            {previewProblem && (
+            {previewProblem ? (
               <div style={{ background: '#f0fdf4', padding: '10px 14px', borderRadius: 8, border: '1px solid #bbf7d0', marginBottom: 16 }}>
                 <Text type="secondary" style={{ fontSize: '11px', textTransform: 'uppercase', display: 'block', fontWeight: 600, color: '#166534' }}>
                   Default Problem Statement (Auto Sequential)
@@ -272,6 +272,17 @@ export const AddTeamModal: React.FC<AddTeamModalProps> = ({ open, onClose, onSuc
                   <Text ellipsis strong style={{ fontSize: '13px', color: '#14532d', maxWidth: 260 }}>
                     {previewProblem.title}
                   </Text>
+                </div>
+              </div>
+            ) : (
+              <div style={{ background: '#f8fafc', padding: '10px 14px', borderRadius: 8, border: '1px solid #e2e8f0', marginBottom: 16 }}>
+                <Text type="secondary" style={{ fontSize: '11px', textTransform: 'uppercase', display: 'block', fontWeight: 600, color: '#64748b' }}>
+                  Default Problem Statement (Auto Sequential)
+                </Text>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                  <Tag color="default" style={{ fontSize: '12px', fontWeight: 700, margin: 0 }}>
+                    No unassigned problem statements available
+                  </Tag>
                 </div>
               </div>
             )}

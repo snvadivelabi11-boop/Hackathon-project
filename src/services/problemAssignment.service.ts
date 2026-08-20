@@ -689,11 +689,186 @@ export interface SequentialAssignmentResult {
 }
 
 /**
+ * Normalizes any string ID or number to its variant representations to ensure
+ * case-insensitive and prefix-insensitive matching across PS001, PS1, 1, ps001, etc.
+ */
+export function extractIdVariants(rawId: string | number | null | undefined): string[] {
+  if (rawId === null || rawId === undefined) return [];
+  const str = String(rawId).trim().toLowerCase();
+  if (!str) return [];
+  const variants = new Set<string>();
+  variants.add(str);
+
+  // If format is like PS001, PS1, PS 1
+  const psMatch = str.match(/^ps\s*0*(\d+)$/i);
+  if (psMatch) {
+    const num = parseInt(psMatch[1], 10);
+    variants.add(String(num));
+    variants.add(`ps${num}`);
+    variants.add(`ps${String(num).padStart(3, '0')}`);
+  } else {
+    // If it's a plain number e.g. "1" or "46"
+    const numMatch = str.match(/^0*(\d+)$/);
+    if (numMatch) {
+      const num = parseInt(numMatch[1], 10);
+      variants.add(String(num));
+      variants.add(`ps${num}`);
+      variants.add(`ps${String(num).padStart(3, '0')}`);
+    }
+  }
+  return Array.from(variants);
+}
+
+/**
+ * Checks all Firestore sources to find every occupied / assigned / published / reserved Problem Statement ID.
+ */
+export async function getComprehensiveOccupiedStatementIds(excludeTeamId?: string): Promise<Set<string>> {
+  const occupiedVariants = new Set<string>();
+
+  const markOccupied = (rawId: string | number | null | undefined) => {
+    if (!rawId) return;
+    const variants = extractIdVariants(rawId);
+    variants.forEach((v) => occupiedVariants.add(v));
+  };
+
+  try {
+    const [teamAssignsSnap, problemAssignsSnap, teamsSnap, draftSnap, psSnap] = await Promise.all([
+      getDocs(collection(db, 'teamProblemAssignments')).catch(() => null),
+      getDocs(collection(db, 'problemAssignments')).catch(() => null),
+      getDocs(collection(db, 'teams')).catch(() => null),
+      getDoc(doc(db, 'settings', 'problemDistributionDraft')).catch(() => null),
+      getDocs(collection(db, 'problemStatements')).catch(() => null),
+    ]);
+
+    // 1. Check teamProblemAssignments collection
+    if (teamAssignsSnap) {
+      teamAssignsSnap.forEach((d) => {
+        const data = d.data();
+        const teamId = data.teamId || d.id;
+        if (excludeTeamId && teamId === excludeTeamId) return;
+        markOccupied(data.statementId);
+        markOccupied(data.problemStatementId);
+        markOccupied(data.problemId);
+        if (data.problemSequence) markOccupied(data.problemSequence);
+      });
+    }
+
+    // 2. Check problemAssignments collection
+    if (problemAssignsSnap) {
+      problemAssignsSnap.forEach((d) => {
+        const data = d.data();
+        if (excludeTeamId && data.teamId === excludeTeamId) return;
+        markOccupied(data.problemStatementId);
+        markOccupied(data.statementId);
+        if (data.assignmentSequence) markOccupied(data.assignmentSequence);
+      });
+    }
+
+    // 3. Check teams collection (catches legacy or directly assigned teams)
+    if (teamsSnap) {
+      teamsSnap.forEach((d) => {
+        const teamId = d.id;
+        if (excludeTeamId && teamId === excludeTeamId) return;
+        const data = d.data();
+        markOccupied(data.assignedStatementId);
+        markOccupied(data.problemStatementId);
+        markOccupied(data.assignedProblemId);
+        markOccupied(data.assignedProblemStatementId);
+      });
+    }
+
+    // 4. Check settings/problemDistributionDraft mapping
+    if (draftSnap && draftSnap.exists()) {
+      const draftData = draftSnap.data();
+      if (Array.isArray(draftData.mapping)) {
+        draftData.mapping.forEach((group: any) => {
+          if (Array.isArray(group.assignedTeams) && group.assignedTeams.length > 0) {
+            const hasOtherTeam = excludeTeamId
+              ? group.assignedTeams.some((t: any) => (t.teamId || t) !== excludeTeamId)
+              : true;
+            if (hasOtherTeam) {
+              markOccupied(group.statementId);
+              markOccupied(group.problemStatementId);
+            }
+          }
+        });
+      }
+    }
+
+    // 5. Check problemStatements collection fields
+    if (psSnap) {
+      psSnap.forEach((d) => {
+        const st = d.data() as ProblemStatement;
+        const statementId = d.id;
+        const isPublished = st.status === 'PUBLISHED' || st.status === 'published' || st.status === 'active';
+
+        const hasAssignedTeam = Boolean(
+          (st.assignedTeamId && st.assignedTeamId.trim().length > 0 && (!excludeTeamId || st.assignedTeamId !== excludeTeamId)) ||
+          (Array.isArray(st.assignedTeamIds) && st.assignedTeamIds.some((tid) => !excludeTeamId || tid !== excludeTeamId)) ||
+          (Array.isArray((st as any).assignedTeams) && (st as any).assignedTeams.some((t: any) => !excludeTeamId || (t.teamId || t) !== excludeTeamId)) ||
+          (st.team && st.team.trim().length > 0 && (!excludeTeamId || st.team !== excludeTeamId))
+        );
+
+        if (hasAssignedTeam || (isPublished && (st.assignedTeamId || st.team))) {
+          markOccupied(statementId);
+          markOccupied(st.statementId);
+          markOccupied(st.problemStatementId);
+          if (st.sequence) markOccupied(st.sequence);
+          if (st.order) markOccupied(st.order);
+        }
+      });
+    }
+  } catch (err) {
+    console.warn('[ProblemAssignment] Error computing occupied statement IDs:', err);
+  }
+
+  return occupiedVariants;
+}
+
+/**
+ * Checks if a specific ProblemStatement object matches any ID in the occupied variants set.
+ */
+export function isStatementOccupied(statement: ProblemStatement, occupiedSet: Set<string>, excludeTeamId?: string): boolean {
+  const idsToCheck = [
+    statement.statementId,
+    statement.problemStatementId,
+    (statement as any).id,
+    statement.sequence ? String(statement.sequence) : null,
+    statement.order ? String(statement.order) : null,
+  ];
+
+  for (const raw of idsToCheck) {
+    if (!raw) continue;
+    const variants = extractIdVariants(raw);
+    for (const v of variants) {
+      if (occupiedSet.has(v)) return true;
+    }
+  }
+
+  // Also check direct object fields
+  if (statement.assignedTeamId && statement.assignedTeamId.trim().length > 0) {
+    if (!excludeTeamId || statement.assignedTeamId !== excludeTeamId) return true;
+  }
+  if (Array.isArray(statement.assignedTeamIds) && statement.assignedTeamIds.length > 0) {
+    if (!excludeTeamId || statement.assignedTeamIds.some((tid) => tid !== excludeTeamId)) return true;
+  }
+  if (Array.isArray((statement as any).assignedTeams) && (statement as any).assignedTeams.length > 0) {
+    if (!excludeTeamId || (statement as any).assignedTeams.some((t: any) => (t.teamId || t) !== excludeTeamId)) return true;
+  }
+  if (statement.team && statement.team.trim().length > 0) {
+    if (!excludeTeamId || statement.team !== excludeTeamId) return true;
+  }
+
+  return false;
+}
+
+/**
  * Calculates the next available unassigned Problem Statement in sequential order (1..N).
  * Pure query helper for previewing in the Add Team modal or UI without writing to Firestore.
  */
 export async function getNextAvailableProblemStatement(
-  knownStatements?: ProblemStatement[]
+  knownStatements?: ProblemStatement[],
+  excludeTeamId?: string
 ): Promise<{
   nextProblem: ProblemStatement | null;
   totalStatements: number;
@@ -723,31 +898,23 @@ export async function getNextAvailableProblemStatement(
       return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
     });
 
-    // 3. Fetch all active team assignments
-    const assignSnap = await getDocs(collection(db, 'teamProblemAssignments'));
-    const occupiedIds = new Set<string>();
-
-    assignSnap.forEach((d) => {
-      const data = d.data();
-      if (data.statementId) occupiedIds.add(data.statementId);
-    });
-
-    // Also include any statements with assignedTeamId populated
-    sorted.forEach((st) => {
-      if (st.assignedTeamId && st.assignedTeamId.trim().length > 0) {
-        occupiedIds.add(st.statementId);
-      }
-    });
+    // 3. Fetch comprehensive occupied statement IDs across all collections
+    const occupiedIds = await getComprehensiveOccupiedStatementIds(excludeTeamId);
 
     // 4. Find the first unassigned problem statement in sequential order
-    const nextAvailable = sorted.find((st) => !occupiedIds.has(st.statementId)) || null;
-    const totalAssigned = occupiedIds.size;
-    const totalAvailable = Math.max(0, sorted.length - totalAssigned);
+    const nextAvailable = sorted.find((st) => !isStatementOccupied(st, occupiedIds, excludeTeamId)) || null;
+
+    let assignedCount = 0;
+    sorted.forEach((st) => {
+      if (isStatementOccupied(st, occupiedIds, excludeTeamId)) assignedCount++;
+    });
+
+    const totalAvailable = Math.max(0, sorted.length - assignedCount);
 
     return {
       nextProblem: nextAvailable,
       totalStatements: sorted.length,
-      totalAssigned,
+      totalAssigned: assignedCount,
       totalAvailable,
     };
   } catch (err: any) {
@@ -776,11 +943,13 @@ export async function assignNextSequentialProblemToTeam(
     return { success: false, assigned: false, message: 'Invalid team ID provided.' };
   }
 
-  // 1. Check if this team already has an assignment (Rule 3: Existing team keeps its assignment)
-  const existingAssignRef = doc(db, 'teamProblemAssignments', teamId);
-  const existingAssignSnap = await getDoc(existingAssignRef);
+  // 1. Check if this team already has an assignment in ANY collection (Rule 3: Existing team keeps its assignment)
+  const [existingAssignSnap, existingTeamSnap] = await Promise.all([
+    getDoc(doc(db, 'teamProblemAssignments', teamId)).catch(() => null),
+    getDoc(doc(db, 'teams', teamId)).catch(() => null),
+  ]);
 
-  if (existingAssignSnap.exists()) {
+  if (existingAssignSnap && existingAssignSnap.exists()) {
     const existingData = existingAssignSnap.data();
     return {
       success: true,
@@ -793,8 +962,28 @@ export async function assignNextSequentialProblemToTeam(
     };
   }
 
-  // 2. Atomic assignment via Firestore transaction
+  if (existingTeamSnap && existingTeamSnap.exists()) {
+    const teamData = existingTeamSnap.data();
+    if (teamData.assignedStatementId) {
+      return {
+        success: true,
+        assigned: false,
+        alreadyAssigned: true,
+        statementId: teamData.assignedStatementId,
+        statementTitle: teamData.assignedStatementTitle || '',
+        message: `Team ${teamId} already has assigned problem ${teamData.assignedStatementId} ("${teamData.assignedStatementTitle}"). Existing assignment preserved.`,
+      };
+    }
+  }
+
+  // 2. Pre-fetch comprehensive occupied statement IDs across all collections
+  const occupiedSet = await getComprehensiveOccupiedStatementIds(teamId);
+
+  // 3. Atomic assignment via Firestore transaction
   try {
+    const existingAssignRef = doc(db, 'teamProblemAssignments', teamId);
+    const teamRef = doc(db, 'teams', teamId);
+
     const result = await runTransaction(db, async (transaction) => {
       // Re-verify existing team assignment inside transaction
       const assignCheck = await transaction.get(existingAssignRef);
@@ -808,6 +997,19 @@ export async function assignNextSequentialProblemToTeam(
           problemSequence: existingData.problemSequence,
           statementTitle: existingData.statementTitle,
           message: `Team ${teamId} already has assigned problem ${existingData.statementId}.`,
+        };
+      }
+
+      const teamCheck = await transaction.get(teamRef);
+      if (teamCheck.exists() && teamCheck.data()?.assignedStatementId) {
+        const teamData = teamCheck.data();
+        return {
+          success: true,
+          assigned: false,
+          alreadyAssigned: true,
+          statementId: teamData.assignedStatementId,
+          statementTitle: teamData.assignedStatementTitle || '',
+          message: `Team ${teamId} already has assigned problem ${teamData.assignedStatementId}.`,
         };
       }
 
@@ -834,25 +1036,8 @@ export async function assignNextSequentialProblemToTeam(
         return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
       });
 
-      // Fetch all current team assignments to know which problem statements are occupied
-      const allAssignsSnap = await getDocs(collection(db, 'teamProblemAssignments'));
-      const occupiedStatementIds = new Set<string>();
-
-      allAssignsSnap.forEach((d) => {
-        const data = d.data();
-        if (data.statementId && data.teamId !== teamId) {
-          occupiedStatementIds.add(data.statementId);
-        }
-      });
-
-      allStatements.forEach((st) => {
-        if (st.assignedTeamId && st.assignedTeamId !== teamId && st.assignedTeamId.trim().length > 0) {
-          occupiedStatementIds.add(st.statementId);
-        }
-      });
-
-      // Find the first unassigned problem statement
-      const nextProblem = allStatements.find((st) => !occupiedStatementIds.has(st.statementId));
+      // Find the first unassigned problem statement using occupiedSet
+      const nextProblem = allStatements.find((st) => !isStatementOccupied(st, occupiedSet, teamId));
 
       if (!nextProblem) {
         return {
@@ -864,7 +1049,7 @@ export async function assignNextSequentialProblemToTeam(
 
       const now = new Date().toISOString();
       const isPublished = nextProblem.status === 'published' || nextProblem.status === 'PUBLISHED';
-      const seq = nextProblem.sequence || nextProblem.order || 1;
+      const seq = nextProblem.order !== undefined && nextProblem.order !== null ? nextProblem.order : (nextProblem.sequence || 1);
 
       // 1. Write /teamProblemAssignments/{teamId}
       transaction.set(
@@ -874,6 +1059,7 @@ export async function assignNextSequentialProblemToTeam(
           statementId: nextProblem.statementId,
           problemStatementId: nextProblem.problemStatementId || nextProblem.statementId,
           problemSequence: seq,
+          order: seq,
           statementTitle: nextProblem.title,
           description: nextProblem.description,
           category: nextProblem.category || 'General',
@@ -910,12 +1096,31 @@ export async function assignNextSequentialProblemToTeam(
       });
 
       // 3. Update /teams/{teamId}
-      const teamRef = doc(db, 'teams', teamId);
-      transaction.update(teamRef, {
-        assignedStatementId: nextProblem.statementId,
-        assignedStatementTitle: nextProblem.title,
-        updatedAt: serverTimestamp(),
-      });
+      if (teamCheck.exists()) {
+        transaction.update(teamRef, {
+          assignedStatementId: nextProblem.statementId,
+          assignedStatementTitle: nextProblem.title,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      // 4. Also write legacy /problemAssignments/{teamId}_{statementId} for backwards compatibility
+      const legacyRef = doc(db, 'problemAssignments', `${teamId}_${nextProblem.statementId}`);
+      transaction.set(
+        legacyRef,
+        {
+          assignmentId: `${teamId}_${nextProblem.statementId}`,
+          teamId,
+          problemStatementId: nextProblem.statementId,
+          statementId: nextProblem.statementId,
+          assignmentSequence: seq,
+          status: isPublished ? 'PUBLISHED' : 'DRAFT',
+          assignedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        },
+        { merge: true }
+      );
 
       return {
         success: true,

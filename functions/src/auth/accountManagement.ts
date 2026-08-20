@@ -48,6 +48,161 @@ async function getUniqueUsername(db: admin.firestore.Firestore, baseUsername: st
   }
 }
 
+function extractIdVariants(rawId: string | number | null | undefined): string[] {
+  if (rawId === null || rawId === undefined) return [];
+  const str = String(rawId).trim().toLowerCase();
+  if (!str) return [];
+  const variants = new Set<string>();
+  variants.add(str);
+
+  const psMatch = str.match(/^ps\s*0*(\d+)$/i);
+  if (psMatch) {
+    const num = parseInt(psMatch[1], 10);
+    variants.add(String(num));
+    variants.add(`ps${num}`);
+    variants.add(`ps${String(num).padStart(3, '0')}`);
+  } else {
+    const numMatch = str.match(/^0*(\d+)$/);
+    if (numMatch) {
+      const num = parseInt(numMatch[1], 10);
+      variants.add(String(num));
+      variants.add(`ps${num}`);
+      variants.add(`ps${String(num).padStart(3, '0')}`);
+    }
+  }
+  return Array.from(variants);
+}
+
+async function getComprehensiveOccupiedStatementIdsBackend(db: FirebaseFirestore.Firestore, excludeTeamId?: string): Promise<Set<string>> {
+  const occupiedVariants = new Set<string>();
+
+  const markOccupied = (rawId: string | number | null | undefined) => {
+    if (!rawId) return;
+    const variants = extractIdVariants(rawId);
+    variants.forEach((v) => occupiedVariants.add(v));
+  };
+
+  try {
+    const [teamAssignsSnap, problemAssignsSnap, teamsSnap, draftSnap, psSnap] = await Promise.all([
+      db.collection('teamProblemAssignments').get().catch(() => null),
+      db.collection('problemAssignments').get().catch(() => null),
+      db.collection('teams').get().catch(() => null),
+      db.collection('settings').doc('problemDistributionDraft').get().catch(() => null),
+      db.collection('problemStatements').get().catch(() => null),
+    ]);
+
+    if (teamAssignsSnap) {
+      teamAssignsSnap.forEach((d) => {
+        const data = d.data();
+        const teamId = data.teamId || d.id;
+        if (excludeTeamId && teamId === excludeTeamId) return;
+        markOccupied(data.statementId);
+        markOccupied(data.problemStatementId);
+        markOccupied(data.problemId);
+        if (data.problemSequence) markOccupied(data.problemSequence);
+      });
+    }
+
+    if (problemAssignsSnap) {
+      problemAssignsSnap.forEach((d) => {
+        const data = d.data();
+        if (excludeTeamId && data.teamId === excludeTeamId) return;
+        markOccupied(data.problemStatementId);
+        markOccupied(data.statementId);
+        if (data.assignmentSequence) markOccupied(data.assignmentSequence);
+      });
+    }
+
+    if (teamsSnap) {
+      teamsSnap.forEach((d) => {
+        const teamId = d.id;
+        if (excludeTeamId && teamId === excludeTeamId) return;
+        const data = d.data();
+        markOccupied(data.assignedStatementId);
+        markOccupied(data.problemStatementId);
+        markOccupied(data.assignedProblemId);
+      });
+    }
+
+    if (draftSnap && draftSnap.exists) {
+      const draftData = draftSnap.data() as any;
+      if (Array.isArray(draftData?.mapping)) {
+        draftData.mapping.forEach((group: any) => {
+          if (Array.isArray(group.assignedTeams) && group.assignedTeams.length > 0) {
+            const hasOtherTeam = excludeTeamId
+              ? group.assignedTeams.some((t: any) => (t.teamId || t) !== excludeTeamId)
+              : true;
+            if (hasOtherTeam) {
+              markOccupied(group.statementId);
+              markOccupied(group.problemStatementId);
+            }
+          }
+        });
+      }
+    }
+
+    if (psSnap) {
+      psSnap.forEach((d) => {
+        const st = d.data() as any;
+        const statementId = d.id;
+        const isPublished = st.status === 'PUBLISHED' || st.status === 'published' || st.status === 'active';
+
+        const hasAssignedTeam = Boolean(
+          (st.assignedTeamId && String(st.assignedTeamId).trim().length > 0 && (!excludeTeamId || st.assignedTeamId !== excludeTeamId)) ||
+          (Array.isArray(st.assignedTeamIds) && st.assignedTeamIds.some((tid: any) => !excludeTeamId || tid !== excludeTeamId)) ||
+          (Array.isArray(st.assignedTeams) && st.assignedTeams.some((t: any) => !excludeTeamId || (t.teamId || t) !== excludeTeamId)) ||
+          (st.team && String(st.team).trim().length > 0 && (!excludeTeamId || st.team !== excludeTeamId))
+        );
+
+        if (hasAssignedTeam || (isPublished && (st.assignedTeamId || st.team))) {
+          markOccupied(statementId);
+          markOccupied(st.statementId);
+          markOccupied(st.problemStatementId);
+          if (st.sequence) markOccupied(st.sequence);
+          if (st.order) markOccupied(st.order);
+        }
+      });
+    }
+  } catch (err) {
+    console.warn('[CloudFunctions] Error computing occupied statement IDs:', err);
+  }
+
+  return occupiedVariants;
+}
+
+function isStatementOccupiedBackend(statement: any, occupiedSet: Set<string>, excludeTeamId?: string): boolean {
+  const idsToCheck = [
+    statement.statementId,
+    statement.problemStatementId,
+    statement.id,
+    statement.sequence ? String(statement.sequence) : null,
+    statement.order ? String(statement.order) : null,
+  ];
+
+  for (const raw of idsToCheck) {
+    if (!raw) continue;
+    const variants = extractIdVariants(raw);
+    for (const v of variants) {
+      if (occupiedSet.has(v)) return true;
+    }
+  }
+
+  if (statement.assignedTeamId && String(statement.assignedTeamId).trim().length > 0) {
+    if (!excludeTeamId || statement.assignedTeamId !== excludeTeamId) return true;
+  }
+  if (Array.isArray(statement.assignedTeamIds) && statement.assignedTeamIds.length > 0) {
+    if (!excludeTeamId || statement.assignedTeamIds.some((tid: any) => tid !== excludeTeamId)) return true;
+  }
+  if (Array.isArray(statement.assignedTeams) && statement.assignedTeams.length > 0) {
+    if (!excludeTeamId || statement.assignedTeams.some((t: any) => (t.teamId || t) !== excludeTeamId)) return true;
+  }
+  if (statement.team && String(statement.team).trim().length > 0) {
+    if (!excludeTeamId || statement.team !== excludeTeamId) return true;
+  }
+
+  return false;
+}
+
 /**
  * Preview next sequential Team ID and generated username for Admin UI.
  */
@@ -87,23 +242,12 @@ export const getNextTeamPreview = functions.https.onCall(async (data, context) =
         return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
       });
 
-      const allAssignsSnap = await db.collection('teamProblemAssignments').get();
-      const occupiedIds = new Set<string>();
-      allAssignsSnap.forEach((d) => {
-        const dat = d.data();
-        if (dat.statementId) occupiedIds.add(dat.statementId);
-      });
-      allStatements.forEach((st) => {
-        if (st.assignedTeamId && st.assignedTeamId.trim().length > 0) {
-          occupiedIds.add(st.statementId);
-        }
-      });
-
-      const nextProblem = allStatements.find((st) => !occupiedIds.has(st.statementId));
+      const occupiedIds = await getComprehensiveOccupiedStatementIdsBackend(db);
+      const nextProblem = allStatements.find((st) => !isStatementOccupiedBackend(st, occupiedIds));
       if (nextProblem) {
         defaultProblemStatement = {
           statementId: nextProblem.statementId,
-          sequence: nextProblem.sequence || nextProblem.order || 1,
+          sequence: nextProblem.order !== undefined && nextProblem.order !== null ? nextProblem.order : (nextProblem.sequence || 1),
           title: nextProblem.title,
         };
       }
@@ -267,21 +411,10 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
             return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
           });
 
-          const allAssignsSnap = await db.collection('teamProblemAssignments').get();
-          const occupiedIds = new Set<string>();
-          allAssignsSnap.forEach((d) => {
-            const dat = d.data();
-            if (dat.statementId && dat.teamId !== allocatedTeamId) occupiedIds.add(dat.statementId);
-          });
-          allStatements.forEach((st) => {
-            if (st.assignedTeamId && st.assignedTeamId !== allocatedTeamId && st.assignedTeamId.trim().length > 0) {
-              occupiedIds.add(st.statementId);
-            }
-          });
-
-          const nextProblem = allStatements.find((st) => !occupiedIds.has(st.statementId));
+          const occupiedIds = await getComprehensiveOccupiedStatementIdsBackend(db, allocatedTeamId);
+          const nextProblem = allStatements.find((st) => !isStatementOccupiedBackend(st, occupiedIds, allocatedTeamId));
           if (nextProblem) {
-            const seq = nextProblem.sequence || nextProblem.order || 1;
+            const seq = nextProblem.order !== undefined && nextProblem.order !== null ? nextProblem.order : (nextProblem.sequence || 1);
             const isPublished = nextProblem.status === 'published' || nextProblem.status === 'PUBLISHED';
             const nowIso = new Date().toISOString();
 
@@ -290,6 +423,7 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
               statementId: nextProblem.statementId,
               problemStatementId: nextProblem.problemStatementId || nextProblem.statementId,
               problemSequence: seq,
+              order: seq,
               statementTitle: nextProblem.title,
               description: nextProblem.description,
               category: nextProblem.category || 'General',
