@@ -45,6 +45,7 @@ export {
   getCloudinaryUploadSignature,
   submitFile,
   submitGithub,
+  removeSubmission,
 } from './submissions/submissionHandler';
 
 // Export AI Evaluation Function

@@ -12,6 +12,7 @@ import {
   Divider,
   Row,
   Col,
+  Popconfirm,
 } from 'antd';
 import {
   CodeOutlined,
@@ -19,6 +20,7 @@ import {
   LinkOutlined,
   CheckCircleOutlined,
   SaveOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { useScoring } from '../../contexts/ScoringContext';
@@ -26,6 +28,7 @@ import { subscribeToRounds } from '../../services/rounds.service';
 import {
   subscribeToTeamSubmissions,
   submitGithubRecord,
+  removeSubmissionRecord,
 } from '../../services/submissions.service';
 import {
   subscribeToTimingConfig,
@@ -48,6 +51,7 @@ export const Round3Page: React.FC = () => {
   const [timingConfig, setTimingConfig] = useState<HackathonTimingConfig | null>(null);
   const [submission, setSubmission] = useState<Submission | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [isRemoving, setIsRemoving] = useState<boolean>(false);
   const [form] = Form.useForm();
 
   useEffect(() => {
@@ -112,6 +116,21 @@ export const Round3Page: React.FC = () => {
       message.error(err.message || 'Failed to submit.');
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleRemoveSubmission = async () => {
+    setIsRemoving(true);
+    try {
+      await removeSubmissionRecord(teamId, 'round3');
+      message.success('Round 3 submission removed successfully.');
+      setSubmission(null);
+      form.resetFields();
+    } catch (err: any) {
+      console.error('Round 3 Remove failed:', err);
+      message.error(err.message || 'Failed to remove submission.');
+    } finally {
+      setIsRemoving(false);
     }
   };
 
@@ -249,27 +268,42 @@ export const Round3Page: React.FC = () => {
 
             <Divider style={{ margin: '16px 0' }} />
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div>
-                <Text strong>Repository: </Text>
-                <a href={submission.githubUrl} target="_blank" rel="noopener noreferrer">
-                  {submission.githubUrl}
-                </a>
-              </div>
-              {submission.prototypeUrl && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div>
-                  <Text strong>Live Application: </Text>
-                  <a href={submission.prototypeUrl} target="_blank" rel="noopener noreferrer">
-                    {submission.prototypeUrl}
+                  <Text strong>Repository: </Text>
+                  <a href={submission.githubUrl} target="_blank" rel="noopener noreferrer">
+                    {submission.githubUrl}
                   </a>
                 </div>
-              )}
-              {submission.notes && (
-                <div>
-                  <Text strong>Setup Notes: </Text>
-                  <Text type="secondary">{submission.notes}</Text>
-                </div>
-              )}
+                {submission.prototypeUrl && (
+                  <div>
+                    <Text strong>Live Application: </Text>
+                    <a href={submission.prototypeUrl} target="_blank" rel="noopener noreferrer">
+                      {submission.prototypeUrl}
+                    </a>
+                  </div>
+                )}
+                {submission.notes && (
+                  <div>
+                    <Text strong>Setup Notes: </Text>
+                    <Text type="secondary">{submission.notes}</Text>
+                  </div>
+                )}
+              </div>
+
+              <Popconfirm
+                title="Remove Submission"
+                description="Are you sure you want to remove this submission file? This action cannot be undone."
+                onConfirm={handleRemoveSubmission}
+                okText="Yes, Remove"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: isRemoving }}
+              >
+                <Button danger icon={<DeleteOutlined />} loading={isRemoving}>
+                  Remove
+                </Button>
+              </Popconfirm>
             </div>
           </div>
         )}

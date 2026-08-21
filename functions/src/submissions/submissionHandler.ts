@@ -319,3 +319,91 @@ export const submitGithub = functions.https.onCall(async (data, context) => {
     message: 'Round 3 prototype submitted successfully.',
   };
 });
+
+/**
+ * Removes / deletes a submission record and cleans up associated file metadata.
+ * Strictly verifies that the authenticated user is a member of the team (or an admin).
+ */
+export const removeSubmission = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
+  }
+
+  const { roundId, teamId: requestedTeamId } = data || {};
+  if (!roundId) {
+    throw new functions.https.HttpsError('invalid-argument', 'roundId is required.');
+  }
+
+  const db = admin.firestore();
+  const uid = context.auth.uid;
+  const userDoc = await db.collection('users').doc(uid).get();
+  if (!userDoc.exists) throw new functions.https.HttpsError('not-found', 'User not found.');
+
+  const userData = userDoc.data()!;
+  const isAdmin = userData.role === 'admin' || (context.auth.token as any).role === 'admin' || (context.auth.token as any).admin === true;
+  const userTeamId = userData.teamId;
+
+  const targetTeamId = (isAdmin && requestedTeamId) ? requestedTeamId : userTeamId;
+  if (!targetTeamId) {
+    throw new functions.https.HttpsError('permission-denied', 'No team linked with this account.');
+  }
+
+  // Security check: non-admin can only remove their own team submission
+  if (!isAdmin && requestedTeamId && requestedTeamId !== userTeamId) {
+    throw new functions.https.HttpsError('permission-denied', 'Unauthorized: You can only remove your own team submission.');
+  }
+
+  const submissionId = `${targetTeamId}_${roundId}`;
+  const subRef = db.collection('submissions').doc(submissionId);
+  const subDoc = await subRef.get();
+
+  if (subDoc.exists) {
+    const subData = subDoc.data()!;
+    const publicId = subData.cloudinaryPublicId || subData.publicId;
+
+    // Cloudinary asset destruction if configured
+    if (publicId) {
+      try {
+        const cloudName = process.env.CLOUDINARY_CLOUD_NAME || functions.config().cloudinary?.cloud_name;
+        const apiKey = process.env.CLOUDINARY_API_KEY || functions.config().cloudinary?.api_key;
+        const apiSecret = process.env.CLOUDINARY_API_SECRET || functions.config().cloudinary?.api_secret;
+
+        if (cloudName && apiKey && apiSecret) {
+          const timestamp = Math.round(new Date().getTime() / 1000);
+          const stringToSign = `public_id=${publicId}&timestamp=${timestamp}${apiSecret}`;
+          const signature = crypto.createHash('sha1').update(stringToSign).digest('hex');
+
+          const formData = new URLSearchParams();
+          formData.append('public_id', publicId);
+          formData.append('api_key', apiKey);
+          formData.append('timestamp', String(timestamp));
+          formData.append('signature', signature);
+
+          await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/destroy`, {
+            method: 'POST',
+            body: formData,
+          }).catch(() => {});
+        }
+      } catch (err) {
+        console.warn('Cloudinary destroy error:', err);
+      }
+    }
+
+    // Delete top-level /submissions/{teamId_roundId}
+    await subRef.delete();
+  }
+
+  // Delete /teams/{teamId}/submissions/{roundId}
+  await db.collection('teams').doc(targetTeamId).collection('submissions').doc(roundId).delete().catch(() => {});
+
+  // Update team submitted flag
+  const roundNum = roundId.includes('1') ? 1 : roundId.includes('2') ? 2 : 3;
+  const teamUpdateField = roundNum === 1 ? 'round1Submitted' : roundNum === 2 ? 'round2Submitted' : 'round3Submitted';
+  await db.collection('teams').doc(targetTeamId).set({
+    [teamUpdateField]: false,
+    updatedAt: admin.firestore.Timestamp.now(),
+  }, { merge: true }).catch(() => {});
+
+  return { success: true, message: `Submission for Round ${roundNum} removed successfully.` };
+});
+

@@ -5,13 +5,15 @@ import {
   getDoc,
   setDoc,
   updateDoc,
+  deleteDoc,
   onSnapshot,
   query,
   where,
   orderBy,
   serverTimestamp,
 } from 'firebase/firestore';
-import { db, auth } from '../firebase/config';
+import { httpsCallable } from 'firebase/functions';
+import { db, auth, functions } from '../firebase/config';
 import { Submission } from '../types';
 import { calculateRoundTimingEvaluation } from './timing.service';
 
@@ -486,4 +488,40 @@ export async function submitGithubRecord(
   }).catch(() => {});
 
   return submissionItem;
+}
+
+/**
+ * Removes a submission record from Firestore and cleans up storage.
+ * Works seamlessly for Round 1, Round 2, and Round 3.
+ */
+export async function removeSubmissionRecord(teamId: string, roundId: string): Promise<void> {
+  if (!teamId || !roundId) return;
+
+  const subId = `${teamId}_${roundId}`;
+  const subDocRef = doc(db, 'submissions', subId);
+  const teamSubRef = doc(db, 'teams', teamId, 'submissions', roundId);
+  const roundNum = roundId.includes('1') ? 1 : roundId.includes('2') ? 2 : 3;
+
+  // 1. Delete from top-level /submissions/{teamId_roundId}
+  await deleteDoc(subDocRef).catch(() => {});
+
+  // 2. Delete from /teams/{teamId}/submissions/{roundId}
+  await deleteDoc(teamSubRef).catch(() => {});
+
+  // 3. Update team submission indicator flag
+  const teamUpdate = roundNum === 1
+    ? { round1Submitted: false, updatedAt: serverTimestamp() }
+    : roundNum === 2
+    ? { round2Submitted: false, updatedAt: serverTimestamp() }
+    : { round3Submitted: false, updatedAt: serverTimestamp() };
+
+  await updateDoc(doc(db, 'teams', teamId), teamUpdate).catch(() => {});
+
+  // 4. Also call Cloud Function for secure server-side cleanup if available
+  try {
+    const fn = httpsCallable(functions, 'removeSubmission');
+    await fn({ roundId, teamId });
+  } catch (err) {
+    // Cloud function is optional enhancement
+  }
 }

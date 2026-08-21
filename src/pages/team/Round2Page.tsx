@@ -12,6 +12,7 @@ import {
   Alert,
   Row,
   Col,
+  Popconfirm,
 } from 'antd';
 import {
   UploadOutlined,
@@ -22,12 +23,14 @@ import {
   EyeOutlined,
   FileDoneOutlined,
   CloudUploadOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { subscribeToRound } from '../../services/rounds.service';
 import {
   uploadSubmissionFile,
   submitFileRecord,
+  removeSubmissionRecord,
   subscribeToTeamSubmissions,
   validateSubmissionFile,
 } from '../../services/submissions.service';
@@ -55,6 +58,7 @@ export const Round2Page: React.FC = () => {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isRemoving, setIsRemoving] = useState(false);
 
   useEffect(() => {
     const unsubRound = subscribeToRound('round2', setRound);
@@ -119,6 +123,21 @@ export const Round2Page: React.FC = () => {
       message.error(errMsg);
     } finally {
       setIsUploading(false);
+    }
+  };
+
+  const handleRemoveSubmission = async () => {
+    setIsRemoving(true);
+    try {
+      await removeSubmissionRecord(teamId, 'round2');
+      message.success('Round 2 presentation file removed successfully.');
+      setSubmission(null);
+      setSelectedFile(null);
+    } catch (err: any) {
+      console.error('Round 2 Remove failed:', err);
+      message.error(err.message || 'Failed to remove presentation file.');
+    } finally {
+      setIsRemoving(false);
     }
   };
 
@@ -301,6 +320,18 @@ export const Round2Page: React.FC = () => {
                 >
                   Download
                 </Button>
+                <Popconfirm
+                  title="Remove Submission"
+                  description="Are you sure you want to remove this submission file? This action cannot be undone."
+                  onConfirm={handleRemoveSubmission}
+                  okText="Yes, Remove"
+                  cancelText="Cancel"
+                  okButtonProps={{ danger: true, loading: isRemoving }}
+                >
+                  <Button danger icon={<DeleteOutlined />} loading={isRemoving}>
+                    Remove
+                  </Button>
+                </Popconfirm>
               </Space>
             </div>
           </div>
