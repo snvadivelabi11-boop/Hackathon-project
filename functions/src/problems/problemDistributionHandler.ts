@@ -117,12 +117,25 @@ export const publishProblemDistribution = functions.https.onCall(async (data, co
     throw new functions.https.HttpsError('failed-precondition', 'Draft distribution mapping is empty.');
   }
 
+  // Fetch currently active teams to exclude deleted / disabled teams
+  const teamsSnap = await db.collection('teams').get();
+  const activeTeamsSet = new Set(
+    teamsSnap.docs
+      .filter((d) => d.data().status !== 'disabled')
+      .map((d) => d.id.toUpperCase())
+  );
+
   const batch = db.batch();
   const now = admin.firestore.FieldValue.serverTimestamp();
   let totalAssigned = 0;
 
   mapping.forEach((group) => {
     group.assignedTeams.forEach((team: any) => {
+      if (!activeTeamsSet.has(team.teamId.toUpperCase())) {
+        // Skip stale / deleted / disabled teams
+        return;
+      }
+
       const assignmentRef = db.collection('teamProblemAssignments').doc(team.teamId);
       const assignmentData: TeamProblemAssignmentDoc = {
         teamId: team.teamId,
@@ -135,6 +148,18 @@ export const publishProblemDistribution = functions.https.onCall(async (data, co
         status: 'PUBLISHED',
       };
       batch.set(assignmentRef, assignmentData, { merge: true });
+
+      const teamRef = db.collection('teams').doc(team.teamId);
+      batch.set(teamRef, {
+        assignedStatementId: group.statementId,
+        problemStatementId: group.statementId,
+        assignedProblemId: group.statementId,
+        assignedProblemTitle: group.statementTitle,
+        problemTitle: group.statementTitle,
+        assignmentPublished: true,
+        updatedAt: now,
+      }, { merge: true });
+
       totalAssigned++;
     });
   });

@@ -150,7 +150,7 @@ export function calculateDynamicAssignmentMapping(
     return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
   });
 
-  const activeTeams = teams.filter((t) => t.status !== 'disabled');
+  const activeTeams = teams.filter((t) => t && t.status !== 'disabled');
   const sortedTeams = [...activeTeams].sort((a, b) => {
     const numA = parseInt(a.teamId?.match(/\d+/)?.[0] || '0', 10);
     const numB = parseInt(b.teamId?.match(/\d+/)?.[0] || '0', 10);
@@ -158,10 +158,10 @@ export function calculateDynamicAssignmentMapping(
     return (a.teamId || '').localeCompare(b.teamId || '', undefined, { numeric: true });
   });
 
-  const teamMap = new Map<string, Team>();
-  teams.forEach((t) => {
+  const activeTeamMap = new Map<string, Team>();
+  activeTeams.forEach((t) => {
     if (t.teamId) {
-      teamMap.set(t.teamId.toUpperCase(), t);
+      activeTeamMap.set(t.teamId.toUpperCase(), t);
     }
   });
 
@@ -171,17 +171,19 @@ export function calculateDynamicAssignmentMapping(
 
   sortedStatements.forEach((st) => statementToAssignedTeams.set(st.statementId, new Set<string>()));
 
-  // PHASE 1 — Register all EXISTING / PERSISTED assignments
+  // PHASE 1 — Register all EXISTING / PERSISTED assignments ONLY for ACTIVE teams
   sortedStatements.forEach((st) => {
     const set = statementToAssignedTeams.get(st.statementId)!;
     if (st.assignedTeamId && st.assignedTeamId.trim().length > 0) {
       const tid = st.assignedTeamId.trim();
-      set.add(tid);
-      assignedTeamToStatement.set(tid.toUpperCase(), st.statementId);
+      if (activeTeamMap.has(tid.toUpperCase())) {
+        set.add(tid);
+        assignedTeamToStatement.set(tid.toUpperCase(), st.statementId);
+      }
     }
     if (Array.isArray(st.assignedTeamIds)) {
       st.assignedTeamIds.forEach((tid) => {
-        if (tid && tid.trim()) {
+        if (tid && tid.trim() && activeTeamMap.has(tid.trim().toUpperCase())) {
           set.add(tid.trim());
           assignedTeamToStatement.set(tid.trim().toUpperCase(), st.statementId);
         }
@@ -189,8 +191,10 @@ export function calculateDynamicAssignmentMapping(
     }
     if (st.team && st.team.trim().length > 0 && !st.team.startsWith('PS') && st.team.toUpperCase().startsWith('TEAM')) {
       const tid = st.team.trim();
-      set.add(tid);
-      assignedTeamToStatement.set(tid.toUpperCase(), st.statementId);
+      if (activeTeamMap.has(tid.toUpperCase())) {
+        set.add(tid);
+        assignedTeamToStatement.set(tid.toUpperCase(), st.statementId);
+      }
     }
   });
 
@@ -232,7 +236,7 @@ export function calculateDynamicAssignmentMapping(
     const assignedSet = statementToAssignedTeams.get(st.statementId) || new Set<string>();
     const assignedTeamIds = Array.from(assignedSet);
     const assignedTeamsList = assignedTeamIds.map((tid) => {
-      const teamObj = teamMap.get(tid.toUpperCase());
+      const teamObj = activeTeamMap.get(tid.toUpperCase());
       return {
         teamId: tid,
         teamName: teamObj?.teamName || tid,
@@ -262,7 +266,8 @@ export function calculateDynamicAssignmentMapping(
 
 /**
  * Strict 10-point validation check before publishing.
- * Blocks publishing if any blocking issues exist.
+ * Validates ONLY currently ACTIVE teams in the database.
+ * Stale, deleted, or disabled team references are safely ignored.
  */
 export function validateAssignmentMappingStrict(
   statements: ProblemStatement[],
@@ -270,7 +275,8 @@ export function validateAssignmentMappingStrict(
   mapping: ProblemAssignmentPreviewItem[]
 ): ProblemAssignmentValidationResult {
   const issues: string[] = [];
-  const totalTeams = teams.length;
+  const activeTeams = teams.filter((t) => t && t.status !== 'disabled');
+  const totalTeams = activeTeams.length;
   const totalStatements = statements.length;
 
   if (totalStatements === 0) {
@@ -278,7 +284,7 @@ export function validateAssignmentMappingStrict(
   }
 
   if (totalTeams === 0) {
-    issues.push('No registered teams found to assign.');
+    issues.push('No registered active teams found to assign.');
   }
 
   // 1. Check for empty problem titles or descriptions
@@ -303,34 +309,33 @@ export function validateAssignmentMappingStrict(
     seqSet.add(seq);
   });
 
-  // 3. Check for inactive/disabled teams in assignment
-  const existingTeamMap = new Map<string, Team>();
-  teams.forEach((t) => existingTeamMap.set(t.teamId.toUpperCase(), t));
+  // 3. Active Team Map - Validate only currently active teams
+  const activeTeamMap = new Map<string, Team>();
+  activeTeams.forEach((t) => activeTeamMap.set(t.teamId.toUpperCase(), t));
 
-  const assignedTeamSet = new Set<string>();
+  const assignedActiveTeamSet = new Set<string>();
   const unassignedTeamIds: string[] = [];
   const missingTeamIds: string[] = [];
 
   mapping.forEach((m) => {
     m.assignedTeamIds.forEach((tid) => {
-      const teamObj = existingTeamMap.get(tid.toUpperCase());
+      const normalizedId = tid.toUpperCase();
+      const teamObj = activeTeamMap.get(normalizedId);
       if (!teamObj) {
-        missingTeamIds.push(tid);
-        issues.push(`Assigned team ${tid} does not exist in the database.`);
-      } else if (teamObj.status === 'disabled') {
-        issues.push(`Team ${tid} (${teamObj.teamName}) is currently disabled.`);
+        // Stale / deleted / disabled team in assignment: IGNORE, NEVER BLOCK PUBLISH
+        return;
       }
 
-      if (assignedTeamSet.has(tid.toUpperCase())) {
+      if (assignedActiveTeamSet.has(normalizedId)) {
         issues.push(`Duplicate assignment: Team ${tid} is assigned to multiple problem statements.`);
       }
-      assignedTeamSet.add(tid.toUpperCase());
+      assignedActiveTeamSet.add(normalizedId);
     });
   });
 
   // 4. Check for unassigned active teams
-  teams.forEach((t) => {
-    if (t.status !== 'disabled' && !assignedTeamSet.has(t.teamId.toUpperCase())) {
+  activeTeams.forEach((t) => {
+    if (!assignedActiveTeamSet.has(t.teamId.toUpperCase())) {
       unassignedTeamIds.push(t.teamId);
     }
   });
@@ -345,7 +350,7 @@ export function validateAssignmentMappingStrict(
     isValid,
     totalTeams,
     totalStatements,
-    assignedTeamsCount: assignedTeamSet.size,
+    assignedTeamsCount: assignedActiveTeamSet.size,
     unassignedTeamIds,
     missingTeamIds,
     duplicateSequences,
@@ -368,6 +373,10 @@ export async function publishAssignmentSnapshot(
     throw new Error(`Cannot publish problem statements. Validation errors:\n${validation.issues.join('\n')}`);
   }
 
+  const activeTeams = teams.filter((t) => t && t.status !== 'disabled');
+  const activeTeamMap = new Map<string, Team>();
+  activeTeams.forEach((t) => activeTeamMap.set(t.teamId.toUpperCase(), t));
+
   // 1. Fetch current publication version to increment
   const versionDocRef = doc(db, 'settings', 'publishedProblemVersion');
   const versionSnap = await getDoc(versionDocRef);
@@ -383,6 +392,10 @@ export async function publishAssignmentSnapshot(
 
   // 2. Queue Firestore updates
   mapping.forEach((pItem) => {
+    // Filter assigned teams to ONLY currently active teams
+    const activeAssignedTeams = pItem.assignedTeams.filter((t) => activeTeamMap.has(t.teamId.toUpperCase()));
+    const activeAssignedTeamIds = activeAssignedTeams.map((t) => t.teamId);
+
     statementsSnapshot.push({
       statementId: pItem.statementId,
       sequence: pItem.sequence,
@@ -409,9 +422,9 @@ export async function publishAssignmentSnapshot(
         technicalGuidelines: pItem.technicalGuidelines || '',
         constraints: pItem.constraints || '',
         expectedOutcome: pItem.expectedOutcome || '',
-        assignedTeamIds: pItem.assignedTeamIds,
-        assignedTeamId: pItem.assignedTeamIds[0] || null,
-        assignedTeamName: pItem.assignedTeams[0]?.teamName || null,
+        assignedTeamIds: activeAssignedTeamIds,
+        assignedTeamId: activeAssignedTeamIds[0] || null,
+        assignedTeamName: activeAssignedTeams[0]?.teamName || null,
         status: 'PUBLISHED',
         publishedAt: serverTimestamp(),
         publishedBy: adminUser.uid || adminUser.email || 'admin',
@@ -422,7 +435,7 @@ export async function publishAssignmentSnapshot(
     );
 
     // B. Update each assigned team's document and teamProblemAssignment
-    pItem.assignedTeams.forEach((t) => {
+    activeAssignedTeams.forEach((t) => {
       assignmentMapping.push({
         teamId: t.teamId,
         teamName: t.teamName,
@@ -461,27 +474,39 @@ export async function publishAssignmentSnapshot(
       batch.set(
         legacyRef,
         {
-          assignmentId: `${t.teamId}_${pItem.statementId}`,
+          id: `${t.teamId}_${pItem.statementId}`,
           teamId: t.teamId,
+          teamName: t.teamName,
           problemStatementId: pItem.statementId,
-          assignmentSequence: pItem.sequence,
+          problemTitle: pItem.title,
+          statementTitle: pItem.title,
+          assignedAt: now,
+          assignedBy: adminUser.email || adminUser.uid || 'admin',
           status: 'PUBLISHED',
-          publishedAt: now,
-          publishedBy: adminUser.uid || 'admin',
-          createdAt: now,
-          updatedAt: now,
+          publicationId,
+          publicationVersion: newVersion,
         },
         { merge: true }
       );
 
-      // Update Team doc reference
+      // Write team doc fields
       const teamRef = doc(db, 'teams', t.teamId);
-      batch.update(teamRef, {
-        assignedStatementId: pItem.statementId,
-        assignedStatementTitle: pItem.title,
-        publicationId,
-        updatedAt: serverTimestamp(),
-      });
+      batch.set(
+        teamRef,
+        {
+          assignedStatementId: pItem.statementId,
+          problemStatementId: pItem.statementId,
+          assignedProblemId: pItem.statementId,
+          assignedProblemTitle: pItem.title,
+          problemTitle: pItem.title,
+          assignedProblemSequence: pItem.sequence,
+          assignmentPublished: true,
+          publicationId,
+          publicationVersion: newVersion,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
     });
   });
 
