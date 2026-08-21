@@ -304,14 +304,22 @@ export async function uploadSubmissionFile(
 
 /**
  * Submits file submission record for Round 1 (Architecture) or Round 2 (PPT) to Firestore.
+ * Supports single file or multiple files (e.g. up to 5 images for Round 1).
  * Saves to both top-level /submissions and /teams/{teamId}/submissions/{roundId}.
  */
 export async function submitFileRecord(
   teamId: string,
   teamName: string,
   roundId: string,
-  fileData: CloudinaryUploadResult
+  fileDataOrFiles: CloudinaryUploadResult | CloudinaryUploadResult[]
 ): Promise<Submission> {
+  const filesArray: CloudinaryUploadResult[] = Array.isArray(fileDataOrFiles) ? fileDataOrFiles : [fileDataOrFiles];
+  if (filesArray.length === 0) {
+    throw new Error('No files provided for submission.');
+  }
+
+  const firstFile = filesArray[0];
+
   // Validate round active window against authoritative timing evaluation
   const roundDoc = await getDoc(doc(db, 'rounds', roundId)).catch(() => null);
   const timingDoc = await getDoc(doc(db, 'settings', 'timingConfig')).catch(() => null);
@@ -347,6 +355,23 @@ export async function submitFileRecord(
   const version = existingDoc && existingDoc.exists() ? (existingDoc.data().version || 1) + 1 : 1;
   const roundNum = roundId.includes('1') ? 1 : roundId.includes('2') ? 2 : 3;
 
+  const filesMapped = filesArray.map((f) => ({
+    fileUrl: f.downloadUrl,
+    cloudinaryUrl: f.downloadUrl,
+    fileName: f.fileName,
+    originalFileName: f.fileName,
+    fileType: f.fileType || 'image/png',
+    format: f.format || f.fileName.split('.').pop() || 'png',
+    resourceType: f.resourceType || 'image',
+    fileSizeBytes: f.sizeBytes,
+    publicId: f.publicId,
+    cloudinaryPublicId: f.publicId,
+    uploadedAt: new Date().toISOString(),
+  }));
+
+  const totalBytes = filesArray.reduce((acc, curr) => acc + (curr.sizeBytes || 0), 0);
+  const combinedFileNames = filesArray.map((f) => f.fileName).join(', ');
+
   const submissionItem: Submission = {
     id: subId,
     teamId,
@@ -354,12 +379,15 @@ export async function submitFileRecord(
     roundId,
     round: roundNum,
     type: roundNum === 1 ? 'architecture' : 'ppt',
-    fileUrl: fileData.downloadUrl,
-    fileName: fileData.fileName,
-    originalFileName: fileData.fileName,
-    fileType: fileData.fileType,
-    fileSizeBytes: fileData.sizeBytes,
-    publicId: fileData.publicId,
+    fileUrl: firstFile.downloadUrl,
+    cloudinaryUrl: firstFile.downloadUrl,
+    fileName: combinedFileNames,
+    originalFileName: combinedFileNames,
+    fileType: firstFile.fileType,
+    fileSizeBytes: totalBytes,
+    publicId: firstFile.publicId,
+    cloudinaryPublicId: firstFile.publicId,
+    files: filesMapped,
     submittedAt: new Date().toISOString(),
     uploadedAt: new Date().toISOString(),
     status: 'SUBMITTED',
@@ -374,16 +402,17 @@ export async function submitFileRecord(
     roundId,
     round: roundNum,
     submissionType: roundNum === 1 ? 'architecture' : 'ppt',
-    fileName: fileData.fileName,
-    originalFileName: fileData.fileName,
-    cloudinaryUrl: fileData.downloadUrl,
-    cloudinaryPublicId: fileData.publicId,
-    fileUrl: fileData.downloadUrl,
-    publicId: fileData.publicId,
-    resourceType: fileData.resourceType || (roundNum === 1 && fileData.fileName.match(/\.(png|jpg|jpeg|webp)$/i) ? 'image' : 'raw'),
-    format: fileData.format || fileData.fileName.split('.').pop() || '',
-    fileSize: fileData.sizeBytes,
-    fileSizeBytes: fileData.sizeBytes,
+    fileName: combinedFileNames,
+    originalFileName: combinedFileNames,
+    cloudinaryUrl: firstFile.downloadUrl,
+    cloudinaryPublicId: firstFile.publicId,
+    fileUrl: firstFile.downloadUrl,
+    publicId: firstFile.publicId,
+    resourceType: firstFile.resourceType || (roundNum === 1 ? 'image' : 'raw'),
+    format: firstFile.format || firstFile.fileName.split('.').pop() || '',
+    fileSize: totalBytes,
+    fileSizeBytes: totalBytes,
+    files: filesMapped,
     uploadedAt: serverTimestamp(),
     submittedAt: serverTimestamp(),
     uploadedBy: auth.currentUser?.uid || teamId,

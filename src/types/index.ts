@@ -357,6 +357,20 @@ export interface Round {
   updatedAt: any;
 }
 
+export interface SubmissionFile {
+  fileUrl: string;
+  cloudinaryUrl?: string;
+  fileName: string;
+  originalFileName?: string;
+  publicId?: string | null;
+  cloudinaryPublicId?: string | null;
+  fileType?: string;
+  format?: string;
+  resourceType?: string;
+  fileSizeBytes?: number;
+  uploadedAt?: any;
+}
+
 export interface Submission {
   id: string;
   teamId: string;
@@ -374,6 +388,7 @@ export interface Submission {
   format?: string;
   resourceType?: string;
   fileSizeBytes?: number;
+  files?: SubmissionFile[];
   githubUrl?: string;
   githubRepoUrl?: string;
   repositoryUrl?: string;

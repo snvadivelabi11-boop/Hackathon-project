@@ -222,45 +222,53 @@ export const SubmissionsPage: React.FC = () => {
       title: 'Submission Artifacts',
       key: 'artifacts',
       render: (_: any, record: Submission) => {
-        const viewUrl = getSubmissionViewUrl(record);
-        const downloadUrl = getSubmissionDownloadUrl(record);
+        const filesToRender = record.files && record.files.length > 0
+          ? record.files
+          : record.fileUrl
+            ? [{ fileUrl: record.fileUrl, fileName: record.fileName || 'submission_file', fileSizeBytes: record.fileSizeBytes }]
+            : [];
+
         return (
           <Space direction="vertical" size={4}>
-            {viewUrl && (
-              <Space wrap>
-                {getFileIcon(record.fileName)}
-                {isImageFile(record.fileName) ? (
+            {filesToRender.map((file, fIdx) => {
+              const viewUrl = getSubmissionViewUrl(file);
+              const downloadUrl = getSubmissionDownloadUrl(file);
+              return (
+                <Space key={fIdx} wrap>
+                  {getFileIcon(file.fileName)}
+                  {isImageFile(file.fileName) ? (
+                    <Button
+                      type="link"
+                      size="small"
+                      style={{ padding: 0, fontWeight: 600 }}
+                      onClick={() => {
+                        setPreviewImageUrl(viewUrl);
+                        setPreviewImageModalOpen(true);
+                      }}
+                    >
+                      {safeString(file.fileName) || `Image ${fIdx + 1}`} (Preview)
+                    </Button>
+                  ) : (
+                    <a
+                      href={viewUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ fontWeight: 600, color: '#1677ff' }}
+                    >
+                      {safeString(file.fileName) || `File ${fIdx + 1}`}
+                    </a>
+                  )}
                   <Button
-                    type="link"
+                    type="text"
                     size="small"
-                    style={{ padding: 0, fontWeight: 600 }}
-                    onClick={() => {
-                      setPreviewImageUrl(viewUrl);
-                      setPreviewImageModalOpen(true);
-                    }}
-                  >
-                    {safeString(record.fileName) || 'File'} (Preview)
-                  </Button>
-                ) : (
-                  <a
-                    href={viewUrl}
+                    icon={<DownloadOutlined />}
+                    href={downloadUrl}
                     target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ fontWeight: 600, color: '#1677ff' }}
-                  >
-                    {safeString(record.fileName) || 'View File'}
-                  </a>
-                )}
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<DownloadOutlined />}
-                  href={downloadUrl}
-                  target="_blank"
-                  download={record.fileName || true}
-                />
-              </Space>
-            )}
+                    download={file.fileName || true}
+                  />
+                </Space>
+              );
+            })}
 
           {record.githubUrl && (
             <Space>
@@ -483,67 +491,132 @@ export const SubmissionsPage: React.FC = () => {
                       >
                         {r1Sub ? (
                           <div>
-                            <div style={{ marginBottom: 12 }}>
-                              <Space>
-                                {getFileIcon(r1Sub.fileName)}
-                                <Text strong ellipsis style={{ maxWidth: 180 }}>
-                                  {r1Sub.fileName || 'Architecture File'}
-                                </Text>
-                              </Space>
-                              <div style={{ fontSize: '11px', color: '#64748b', marginTop: 4 }}>
-                                Uploaded: {formatISTDateTime(r1Sub.submittedAt)}
-                              </div>
-                            </div>
+                            {r1Sub.files && r1Sub.files.length > 1 ? (
+                              <div>
+                                <div style={{ marginBottom: 10 }}>
+                                  <Tag color="cyan" style={{ fontWeight: 600 }}>{r1Sub.files.length} Architecture Images</Tag>
+                                  <div style={{ fontSize: '11px', color: '#64748b', marginTop: 4 }}>
+                                    Uploaded: {formatISTDateTime(r1Sub.submittedAt)}
+                                  </div>
+                                </div>
 
-                            {/* Image Thumbnail Preview if supported */}
-                            {isImageFile(r1Sub.fileName) && r1Sub.fileUrl && (
-                              <div
-                                style={{
-                                  marginBottom: 12,
-                                  borderRadius: 8,
-                                  overflow: 'hidden',
-                                  maxHeight: 120,
-                                  background: '#000',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  cursor: 'pointer',
-                                }}
-                                onClick={() => {
-                                  setPreviewImageUrl(getSubmissionViewUrl(r1Sub));
-                                  setPreviewImageModalOpen(true);
-                                }}
-                              >
-                                <img
-                                  src={getSubmissionViewUrl(r1Sub)}
-                                  alt="Architecture"
-                                  style={{ width: '100%', height: '120px', objectFit: 'cover' }}
-                                />
+                                <Row gutter={[6, 6]} style={{ marginBottom: 12 }}>
+                                  {r1Sub.files.map((file, fIdx) => (
+                                    <Col span={r1Sub.files!.length <= 2 ? 12 : 8} key={fIdx}>
+                                      <div
+                                        style={{
+                                          borderRadius: 6,
+                                          overflow: 'hidden',
+                                          background: '#000',
+                                          height: 70,
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          justifyContent: 'center',
+                                          cursor: 'pointer',
+                                          position: 'relative',
+                                        }}
+                                        onClick={() => {
+                                          setPreviewImageUrl(getSubmissionViewUrl(file));
+                                          setPreviewImageModalOpen(true);
+                                        }}
+                                      >
+                                        <img
+                                          src={getSubmissionViewUrl(file)}
+                                          alt={`Img ${fIdx + 1}`}
+                                          style={{ maxHeight: 70, maxWidth: '100%', objectFit: 'contain' }}
+                                        />
+                                        <div style={{ position: 'absolute', bottom: 2, left: 3, background: 'rgba(0,0,0,0.65)', padding: '0 3px', borderRadius: 3, color: '#fff', fontSize: '9px' }}>
+                                          #{fIdx + 1}
+                                        </div>
+                                      </div>
+                                      <div style={{ display: 'flex', gap: 4, marginTop: 2, justifyContent: 'center' }}>
+                                        <a
+                                          href={getSubmissionViewUrl(file)}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          style={{ fontSize: '11px', fontWeight: 600 }}
+                                        >
+                                          View
+                                        </a>
+                                        <span style={{ color: '#cbd5e1', fontSize: '11px' }}>|</span>
+                                        <a
+                                          href={getSubmissionDownloadUrl(file)}
+                                          target="_blank"
+                                          download={file.fileName || true}
+                                          style={{ fontSize: '11px', color: '#64748b' }}
+                                        >
+                                          Download
+                                        </a>
+                                      </div>
+                                    </Col>
+                                  ))}
+                                </Row>
+                              </div>
+                            ) : (
+                              <div>
+                                <div style={{ marginBottom: 12 }}>
+                                  <Space>
+                                    {getFileIcon(r1Sub.fileName)}
+                                    <Text strong ellipsis style={{ maxWidth: 180 }}>
+                                      {r1Sub.fileName || 'Architecture File'}
+                                    </Text>
+                                  </Space>
+                                  <div style={{ fontSize: '11px', color: '#64748b', marginTop: 4 }}>
+                                    Uploaded: {formatISTDateTime(r1Sub.submittedAt)}
+                                  </div>
+                                </div>
+
+                                {/* Image Thumbnail Preview if supported */}
+                                {isImageFile(r1Sub.fileName) && r1Sub.fileUrl && (
+                                  <div
+                                    style={{
+                                      marginBottom: 12,
+                                      borderRadius: 8,
+                                      overflow: 'hidden',
+                                      maxHeight: 120,
+                                      background: '#000',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      cursor: 'pointer',
+                                    }}
+                                    onClick={() => {
+                                      setPreviewImageUrl(getSubmissionViewUrl(r1Sub));
+                                      setPreviewImageModalOpen(true);
+                                    }}
+                                  >
+                                    <img
+                                      src={getSubmissionViewUrl(r1Sub)}
+                                      alt="Architecture"
+                                      style={{ width: '100%', height: '120px', objectFit: 'cover' }}
+                                    />
+                                  </div>
+                                )}
+
+                                <Space wrap style={{ marginBottom: 16 }}>
+                                  <Button
+                                    size="small"
+                                    type="primary"
+                                    icon={<EyeOutlined />}
+                                    href={getSubmissionViewUrl(r1Sub)}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{ background: '#1677ff' }}
+                                  >
+                                    VIEW FILE
+                                  </Button>
+                                  <Button
+                                    size="small"
+                                    icon={<DownloadOutlined />}
+                                    href={getSubmissionDownloadUrl(r1Sub)}
+                                    target="_blank"
+                                    download={r1Sub.fileName || true}
+                                  >
+                                    DOWNLOAD
+                                  </Button>
+                                </Space>
                               </div>
                             )}
-
-                            <Space wrap style={{ marginBottom: 16 }}>
-                              <Button
-                                size="small"
-                                type="primary"
-                                icon={<EyeOutlined />}
-                                href={getSubmissionViewUrl(r1Sub)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                style={{ background: '#1677ff' }}
-                              >
-                                VIEW FILE
-                              </Button>
-                              <Button
-                                size="small"
-                                icon={<DownloadOutlined />}
-                                href={getSubmissionDownloadUrl(r1Sub)}
-                                target="_blank"
-                                download={r1Sub.fileName || true}
-                              >
-                                DOWNLOAD
-                              </Button>
-                            </Space>
 
                             <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <div>
@@ -793,14 +866,25 @@ export const SubmissionsPage: React.FC = () => {
           <div style={{ background: '#f8fafc', padding: 16, borderRadius: 8, marginBottom: 20 }}>
             <Text type="secondary">Round Maximum Marks: </Text>
             <Text strong>{maxGradingMarks} Marks</Text>
-            {selectedSub?.fileName && (
+            {selectedSub?.files && selectedSub.files.length > 0 ? (
+              <div style={{ marginTop: 8 }}>
+                <Text type="secondary">Submitted Files ({selectedSub.files.length}): </Text>
+                <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {selectedSub.files.map((f, fIdx) => (
+                    <a key={fIdx} href={getSubmissionViewUrl(f)} target="_blank" rel="noopener noreferrer">
+                      {getFileIcon(f.fileName)} {f.fileName || `Image ${fIdx + 1}`}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            ) : selectedSub?.fileName ? (
               <div style={{ marginTop: 8 }}>
                 <Text type="secondary">Submitted File: </Text>
                 <a href={getSubmissionViewUrl(selectedSub)} target="_blank" rel="noopener noreferrer">
                   {selectedSub.fileName}
                 </a>
               </div>
-            )}
+            ) : null}
             {selectedSub?.githubUrl && (
               <div style={{ marginTop: 8 }}>
                 <Text type="secondary">GitHub Repository: </Text>

@@ -348,12 +348,18 @@ export const EvaluationsPage: React.FC = () => {
             <Tag color="green" icon={<CheckCircleOutlined />} style={{ fontWeight: 600 }}>
               Submitted
             </Tag>
-            <Space size="small">
-              {sub.fileUrl && (
+            <Space size="small" wrap>
+              {sub.files && sub.files.length > 0 ? (
+                sub.files.map((f, fi) => (
+                  <a key={fi} href={getSubmissionViewUrl(f)} target="_blank" rel="noopener noreferrer" style={{ fontSize: '12px' }}>
+                    <LinkOutlined /> {sub.files!.length > 1 ? `Img ${fi + 1}` : 'View File'}
+                  </a>
+                ))
+              ) : sub.fileUrl ? (
                 <a href={getSubmissionViewUrl(sub)} target="_blank" rel="noopener noreferrer" style={{ fontSize: '12px' }}>
                   <LinkOutlined /> View File
                 </a>
-              )}
+              ) : null}
               {sub.githubRepoUrl && (
                 <a href={sub.githubRepoUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: '12px', color: '#24292e' }}>
                   <GithubOutlined /> GitHub
@@ -631,12 +637,18 @@ export const EvaluationsPage: React.FC = () => {
                   {currentSubmission ? (
                     <div style={{ fontSize: '12px', color: '#475569' }}>
                       <div>Deliverable: <Text strong>{currentSubmission.fileName || currentSubmission.fileType || 'Submission File'}</Text></div>
-                      <div style={{ marginTop: 4, display: 'flex', gap: 12 }}>
-                        {currentSubmission.fileUrl && (
+                      <div style={{ marginTop: 4, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                        {currentSubmission.files && currentSubmission.files.length > 0 ? (
+                          currentSubmission.files.map((f, fi) => (
+                            <a key={fi} href={getSubmissionViewUrl(f)} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600 }}>
+                              <LinkOutlined /> {currentSubmission.files!.length > 1 ? `Inspect Image ${fi + 1}` : 'Inspect Submitted File'}
+                            </a>
+                          ))
+                        ) : currentSubmission.fileUrl ? (
                           <a href={getSubmissionViewUrl(currentSubmission)} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600 }}>
                             <LinkOutlined /> Inspect Submitted File
                           </a>
-                        )}
+                        ) : null}
                         {currentSubmission.githubRepoUrl && (
                           <a href={currentSubmission.githubRepoUrl} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600, color: '#24292e' }}>
                             <GithubOutlined /> GitHub Repository

@@ -520,13 +520,19 @@ export const AIAnalyticsPage: React.FC = () => {
               {subR1 ? (
                 <div style={{ fontSize: '12px', color: '#475569' }}>
                   Deliverable: <Text strong>{subR1.fileName || 'Architecture Document'}</Text>
-                  {subR1.fileUrl && (
-                    <span style={{ marginLeft: 12 }}>
+                  <div style={{ marginTop: 4, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    {subR1.files && subR1.files.length > 0 ? (
+                      subR1.files.map((f, fi) => (
+                        <a key={fi} href={getSubmissionViewUrl(f)} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600 }}>
+                          <LinkOutlined /> {subR1.files!.length > 1 ? `Inspect Image ${fi + 1}` : 'Inspect Submitted Architecture File'}
+                        </a>
+                      ))
+                    ) : subR1.fileUrl ? (
                       <a href={getSubmissionViewUrl(subR1)} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600 }}>
                         <LinkOutlined /> Inspect Submitted Architecture File
                       </a>
-                    </span>
-                  )}
+                    ) : null}
+                  </div>
                 </div>
               ) : (
                 <Alert

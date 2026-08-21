@@ -30,6 +30,43 @@ export const normalizeSubmission = (data: any, id: string = ''): Submission => {
   const roundNum = safeRoundNumber(data.round || data.roundId || id);
   const roundId = data.roundId ? safeString(data.roundId) : `round${roundNum}`;
 
+  const files: any[] = Array.isArray(data.files) && data.files.length > 0
+    ? data.files.map((f: any) => ({
+        fileUrl: safeString(f.cloudinaryUrl || f.fileUrl || f.url),
+        cloudinaryUrl: safeString(f.cloudinaryUrl || f.fileUrl || f.url),
+        fileName: safeString(f.fileName || f.originalFileName || f.originalFilename || 'image_file'),
+        originalFileName: safeString(f.originalFileName || f.fileName),
+        fileType: safeString(f.fileType || f.format || 'image/png'),
+        format: safeString(f.format),
+        resourceType: safeString(f.resourceType || 'image'),
+        fileSizeBytes: safeNumber(f.fileSizeBytes || f.fileSize || f.bytes, 0),
+        publicId: safeString(f.cloudinaryPublicId || f.publicId),
+        cloudinaryPublicId: safeString(f.cloudinaryPublicId || f.publicId),
+      }))
+    : (data.fileUrl || data.cloudinaryUrl)
+      ? [{
+          fileUrl: safeString(data.cloudinaryUrl || data.fileUrl || data.url),
+          cloudinaryUrl: safeString(data.cloudinaryUrl || data.fileUrl || data.url),
+          fileName: safeString(data.fileName || data.originalFileName || 'submission_file'),
+          originalFileName: safeString(data.originalFileName || data.fileName),
+          fileType: safeString(data.fileType || data.format || (roundNum === 1 ? 'image/png' : 'raw')),
+          format: safeString(data.format),
+          resourceType: safeString(data.resourceType || (roundNum === 1 ? 'image' : 'raw')),
+          fileSizeBytes: safeNumber(data.fileSizeBytes || data.fileSize || data.bytes, 0),
+          publicId: safeString(data.cloudinaryPublicId || data.publicId),
+          cloudinaryPublicId: safeString(data.cloudinaryPublicId || data.publicId),
+        }]
+      : [];
+
+  const primaryFileUrl = files.length > 0 ? files[0].fileUrl : safeString(data.cloudinaryUrl || data.fileUrl || data.url);
+  const primaryFileName = files.length > 0
+    ? (files.length === 1 ? files[0].fileName : files.map((f: any) => f.fileName).join(', '))
+    : safeString(data.fileName || data.originalFileName || data.originalFilename || (roundNum === 3 ? 'github_repository' : 'submission_file'));
+
+  const totalBytes = files.length > 0
+    ? files.reduce((acc: number, curr: any) => acc + (curr.fileSizeBytes || 0), 0)
+    : safeNumber(data.fileSizeBytes || data.fileSize || data.bytes, 0);
+
   return {
     id: id || safeString(data.id) || `${safeString(data.teamId)}_${roundId}`,
     teamId: safeString(data.teamId),
@@ -38,15 +75,17 @@ export const normalizeSubmission = (data: any, id: string = ''): Submission => {
     round: roundNum,
     type: data.type || (roundNum === 1 ? 'architecture' : roundNum === 2 ? 'ppt' : 'github'),
     submissionType: safeString(data.submissionType || (roundNum === 1 ? 'architecture' : roundNum === 2 ? 'ppt' : 'prototype')),
-    fileUrl: safeString(data.cloudinaryUrl || data.fileUrl || data.url),
-    cloudinaryUrl: safeString(data.cloudinaryUrl || data.fileUrl),
-    fileName: safeString(data.fileName || data.originalFileName || data.originalFilename || (roundNum === 3 ? 'github_repository' : 'submission_file')),
-    originalFileName: safeString(data.originalFileName || data.fileName),
-    fileType: safeString(data.fileType || data.format || data.resourceType || 'raw'),
+    fileUrl: primaryFileUrl,
+    cloudinaryUrl: primaryFileUrl,
+    fileName: primaryFileName,
+    originalFileName: safeString(data.originalFileName || primaryFileName),
+    fileType: safeString(data.fileType || data.format || data.resourceType || (roundNum === 1 ? 'image/png' : 'raw')),
     resourceType: safeString(data.resourceType || (roundNum === 1 ? 'image' : 'raw')),
     format: safeString(data.format),
-    fileSizeBytes: safeNumber(data.fileSizeBytes || data.fileSize || data.bytes, 0),
-    publicId: safeString(data.cloudinaryPublicId || data.publicId),
+    fileSizeBytes: totalBytes,
+    publicId: safeString(data.cloudinaryPublicId || data.publicId || (files.length > 0 ? files[0].publicId : '')),
+    cloudinaryPublicId: safeString(data.cloudinaryPublicId || data.publicId || (files.length > 0 ? files[0].publicId : '')),
+    files,
     submittedAt: data.submittedAt || data.uploadedAt || null,
     uploadedAt: data.uploadedAt || data.submittedAt || null,
     uploadedBy: safeString(data.uploadedBy),
