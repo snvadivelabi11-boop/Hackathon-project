@@ -153,9 +153,9 @@ export const submitFile = functions.https.onCall(async (data, context) => {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated.');
   }
 
-  const { roundId, fileUrl, fileName, fileType, fileSizeBytes, publicId, resourceType, format } = data || {};
-  if (!roundId || !fileUrl || !fileName) {
-    throw new functions.https.HttpsError('invalid-argument', 'roundId, fileUrl, and fileName are required.');
+  const { roundId, fileUrl, fileName, fileType, fileSizeBytes, publicId, resourceType, format, files } = data || {};
+  if (!roundId || (!fileUrl && (!files || files.length === 0)) || (!fileName && (!files || files.length === 0))) {
+    throw new functions.https.HttpsError('invalid-argument', 'roundId, and fileUrl/files are required.');
   }
 
   const db = admin.firestore();
@@ -187,6 +187,38 @@ export const submitFile = functions.https.onCall(async (data, context) => {
 
   const currentVersion = existingSub.exists ? (existingSub.data()!.version || 1) + 1 : 1;
 
+  const filesArray = Array.isArray(files) && files.length > 0
+    ? files.map((f: any) => ({
+        fileUrl: f.fileUrl || f.cloudinaryUrl || f.url || '',
+        cloudinaryUrl: f.cloudinaryUrl || f.fileUrl || f.url || '',
+        fileName: f.fileName || f.originalFileName || 'file',
+        originalFileName: f.originalFileName || f.fileName || 'file',
+        fileType: f.fileType || f.format || 'image/png',
+        format: f.format || '',
+        resourceType: f.resourceType || 'image',
+        fileSizeBytes: f.fileSizeBytes || f.fileSize || f.bytes || 0,
+        publicId: f.cloudinaryPublicId || f.publicId || null,
+        cloudinaryPublicId: f.cloudinaryPublicId || f.publicId || null,
+        uploadedAt: f.uploadedAt || now.toDate().toISOString(),
+      }))
+    : [{
+        fileUrl: fileUrl || '',
+        cloudinaryUrl: fileUrl || '',
+        fileName: fileName || 'file',
+        originalFileName: fileName || 'file',
+        fileType: fileType || 'application/octet-stream',
+        format: format || (fileName ? fileName.split('.').pop() : '') || '',
+        resourceType: resourceType || (roundNum === 1 ? 'image' : 'raw'),
+        fileSizeBytes: fileSizeBytes || 0,
+        publicId: publicId || null,
+        cloudinaryPublicId: publicId || null,
+        uploadedAt: now.toDate().toISOString(),
+      }];
+
+  const primaryUrl = filesArray[0].fileUrl;
+  const primaryName = filesArray.length === 1 ? filesArray[0].fileName : filesArray.map((f: any) => f.fileName).join(', ');
+  const totalSize = filesArray.reduce((acc: number, curr: any) => acc + (curr.fileSizeBytes || 0), 0);
+
   const submissionData = {
     id: submissionId,
     teamId,
@@ -195,17 +227,18 @@ export const submitFile = functions.https.onCall(async (data, context) => {
     round: roundNum,
     submissionType: roundNum === 1 ? 'architecture' : 'presentation',
     type: roundNum === 1 ? 'architecture' : 'ppt',
-    fileUrl,
-    fileName,
-    originalFileName: fileName,
-    cloudinaryPublicId: publicId || null,
-    cloudinaryUrl: fileUrl,
-    publicId: publicId || null,
-    resourceType: resourceType || (roundNum === 1 && fileName.match(/\.(png|jpg|jpeg|webp)$/i) ? 'image' : 'raw'),
-    format: format || fileName.split('.').pop() || '',
-    fileType: fileType || 'application/octet-stream',
-    fileSize: fileSizeBytes || 0,
-    fileSizeBytes: fileSizeBytes || 0,
+    fileUrl: primaryUrl,
+    fileName: primaryName,
+    originalFileName: primaryName,
+    cloudinaryPublicId: filesArray[0].publicId || null,
+    cloudinaryUrl: primaryUrl,
+    publicId: filesArray[0].publicId || null,
+    resourceType: filesArray[0].resourceType || (roundNum === 1 ? 'image' : 'raw'),
+    format: filesArray[0].format || '',
+    fileType: filesArray[0].fileType || 'application/octet-stream',
+    fileSize: totalSize,
+    fileSizeBytes: totalSize,
+    files: filesArray,
     submittedAt: now,
     uploadedAt: now,
     submittedByUid: uid,

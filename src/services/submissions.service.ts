@@ -227,7 +227,7 @@ export async function uploadSubmissionFile(
 
   const nameWithoutExt = file.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_') || 'submission_file';
   const targetFolder = `hackathon/teams/${teamId}/${roundId}`;
-  const targetPublicId = `${Date.now()}_${nameWithoutExt}`;
+  const targetPublicId = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}_${nameWithoutExt}`;
 
   // 3. Send direct XMLHttpRequest to Cloudinary with explicit 45-second timeout
   return new Promise<CloudinaryUploadResult>((resolve, reject) => {
