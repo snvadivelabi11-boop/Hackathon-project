@@ -36,7 +36,7 @@ import {
   InfoCircleOutlined,
 } from '@ant-design/icons';
 import { subscribeToTeams } from '../../services/accounts.service';
-import { subscribeToAllSubmissions } from '../../services/submissions.service';
+import { subscribeToAllSubmissions, getSubmissionViewUrl } from '../../services/submissions.service';
 import { subscribeToAllScores } from '../../services/scores.service';
 import {
   triggerAIEvaluation,
@@ -522,7 +522,7 @@ export const AIAnalyticsPage: React.FC = () => {
                   Deliverable: <Text strong>{subR1.fileName || 'Architecture Document'}</Text>
                   {subR1.fileUrl && (
                     <span style={{ marginLeft: 12 }}>
-                      <a href={subR1.fileUrl} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600 }}>
+                      <a href={getSubmissionViewUrl(subR1)} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600 }}>
                         <LinkOutlined /> Inspect Submitted Architecture File
                       </a>
                     </span>
@@ -718,7 +718,7 @@ export const AIAnalyticsPage: React.FC = () => {
                   Deliverable: <Text strong>{subR2.fileName || 'Presentation Slide Deck'}</Text>
                   {subR2.fileUrl && (
                     <span style={{ marginLeft: 12 }}>
-                      <a href={subR2.fileUrl} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600 }}>
+                      <a href={getSubmissionViewUrl(subR2)} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600 }}>
                         <LinkOutlined /> View Submitted Presentation File
                       </a>
                     </span>
@@ -884,7 +884,7 @@ export const AIAnalyticsPage: React.FC = () => {
                   )}
                   {subR3.fileUrl && (
                     <div style={{ marginTop: 4 }}>
-                      Deliverable File: <a href={subR3.fileUrl} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600 }}><LinkOutlined /> View Archive / Screenshots</a>
+                      Deliverable File: <a href={getSubmissionViewUrl(subR3)} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600 }}><LinkOutlined /> View Archive / Screenshots</a>
                     </div>
                   )}
                 </div>

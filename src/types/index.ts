@@ -365,10 +365,14 @@ export interface Submission {
   round?: number;
   type?: 'architecture' | 'ppt' | 'github';
   fileUrl?: string;
+  cloudinaryUrl?: string;
   fileName?: string;
   originalFileName?: string;
   publicId?: string | null;
+  cloudinaryPublicId?: string | null;
   fileType?: string;
+  format?: string;
+  resourceType?: string;
   fileSizeBytes?: number;
   githubUrl?: string;
   githubRepoUrl?: string;

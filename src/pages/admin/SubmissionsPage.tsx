@@ -35,7 +35,11 @@ import {
   LinkOutlined,
   EditOutlined,
 } from '@ant-design/icons';
-import { subscribeToAllSubmissions } from '../../services/submissions.service';
+import {
+  subscribeToAllSubmissions,
+  getSubmissionViewUrl,
+  getSubmissionDownloadUrl,
+} from '../../services/submissions.service';
 import { subscribeToAllScores, submitEvaluation } from '../../services/scores.service';
 import { subscribeToRounds } from '../../services/rounds.service';
 import { subscribeToTeams } from '../../services/accounts.service';
@@ -217,43 +221,46 @@ export const SubmissionsPage: React.FC = () => {
     {
       title: 'Submission Artifacts',
       key: 'artifacts',
-      render: (_: any, record: Submission) => (
-        <Space direction="vertical" size={4}>
-          {record.fileUrl && (
-            <Space wrap>
-              {getFileIcon(record.fileName)}
-              {isImageFile(record.fileName) ? (
+      render: (_: any, record: Submission) => {
+        const viewUrl = getSubmissionViewUrl(record);
+        const downloadUrl = getSubmissionDownloadUrl(record);
+        return (
+          <Space direction="vertical" size={4}>
+            {viewUrl && (
+              <Space wrap>
+                {getFileIcon(record.fileName)}
+                {isImageFile(record.fileName) ? (
+                  <Button
+                    type="link"
+                    size="small"
+                    style={{ padding: 0, fontWeight: 600 }}
+                    onClick={() => {
+                      setPreviewImageUrl(viewUrl);
+                      setPreviewImageModalOpen(true);
+                    }}
+                  >
+                    {safeString(record.fileName) || 'File'} (Preview)
+                  </Button>
+                ) : (
+                  <a
+                    href={viewUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ fontWeight: 600, color: '#1677ff' }}
+                  >
+                    {safeString(record.fileName) || 'View File'}
+                  </a>
+                )}
                 <Button
-                  type="link"
+                  type="text"
                   size="small"
-                  style={{ padding: 0, fontWeight: 600 }}
-                  onClick={() => {
-                    setPreviewImageUrl(record.fileUrl || '');
-                    setPreviewImageModalOpen(true);
-                  }}
-                >
-                  {safeString(record.fileName) || 'File'} (Preview)
-                </Button>
-              ) : (
-                <a
-                  href={record.fileUrl}
+                  icon={<DownloadOutlined />}
+                  href={downloadUrl}
                   target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ fontWeight: 600, color: '#1677ff' }}
-                >
-                  {safeString(record.fileName) || 'View File'}
-                </a>
-              )}
-              <Button
-                type="text"
-                size="small"
-                icon={<DownloadOutlined />}
-                href={record.fileUrl}
-                target="_blank"
-                download
-              />
-            </Space>
-          )}
+                  download={record.fileName || true}
+                />
+              </Space>
+            )}
 
           {record.githubUrl && (
             <Space>
@@ -269,21 +276,22 @@ export const SubmissionsPage: React.FC = () => {
             </Space>
           )}
 
-          {record.prototypeUrl && (
-            <Space>
-              <LinkOutlined style={{ color: '#52c41a' }} />
-              <a
-                href={record.prototypeUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: '#52c41a' }}
-              >
-                {record.prototypeUrl}
-              </a>
-            </Space>
-          )}
-        </Space>
-      ),
+            {record.prototypeUrl && (
+              <Space>
+                <LinkOutlined style={{ color: '#52c41a' }} />
+                <a
+                  href={record.prototypeUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: '#52c41a' }}
+                >
+                  {record.prototypeUrl}
+                </a>
+              </Space>
+            )}
+          </Space>
+        );
+      },
     },
     {
       title: 'Submitted At (IST)',
@@ -502,12 +510,12 @@ export const SubmissionsPage: React.FC = () => {
                                   cursor: 'pointer',
                                 }}
                                 onClick={() => {
-                                  setPreviewImageUrl(r1Sub.fileUrl || '');
+                                  setPreviewImageUrl(getSubmissionViewUrl(r1Sub));
                                   setPreviewImageModalOpen(true);
                                 }}
                               >
                                 <img
-                                  src={r1Sub.fileUrl}
+                                  src={getSubmissionViewUrl(r1Sub)}
                                   alt="Architecture"
                                   style={{ width: '100%', height: '120px', objectFit: 'cover' }}
                                 />
@@ -519,7 +527,7 @@ export const SubmissionsPage: React.FC = () => {
                                 size="small"
                                 type="primary"
                                 icon={<EyeOutlined />}
-                                href={r1Sub.fileUrl}
+                                href={getSubmissionViewUrl(r1Sub)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 style={{ background: '#1677ff' }}
@@ -529,9 +537,9 @@ export const SubmissionsPage: React.FC = () => {
                               <Button
                                 size="small"
                                 icon={<DownloadOutlined />}
-                                href={r1Sub.fileUrl}
+                                href={getSubmissionDownloadUrl(r1Sub)}
                                 target="_blank"
-                                download
+                                download={r1Sub.fileName || true}
                               >
                                 DOWNLOAD
                               </Button>
@@ -596,7 +604,7 @@ export const SubmissionsPage: React.FC = () => {
                                 size="small"
                                 type="primary"
                                 icon={<EyeOutlined />}
-                                href={r2Sub.fileUrl}
+                                href={getSubmissionViewUrl(r2Sub)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 style={{ background: '#1d39c4' }}
@@ -606,9 +614,9 @@ export const SubmissionsPage: React.FC = () => {
                               <Button
                                 size="small"
                                 icon={<DownloadOutlined />}
-                                href={r2Sub.fileUrl}
+                                href={getSubmissionDownloadUrl(r2Sub)}
                                 target="_blank"
-                                download
+                                download={r2Sub.fileName || true}
                               >
                                 DOWNLOAD
                               </Button>
@@ -788,7 +796,7 @@ export const SubmissionsPage: React.FC = () => {
             {selectedSub?.fileName && (
               <div style={{ marginTop: 8 }}>
                 <Text type="secondary">Submitted File: </Text>
-                <a href={selectedSub.fileUrl} target="_blank" rel="noopener noreferrer">
+                <a href={getSubmissionViewUrl(selectedSub)} target="_blank" rel="noopener noreferrer">
                   {selectedSub.fileName}
                 </a>
               </div>

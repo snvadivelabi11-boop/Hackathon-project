@@ -225,9 +225,9 @@ export async function uploadSubmissionFile(
     throw new Error('Cloudinary Upload Preset is not configured. Please set VITE_CLOUDINARY_UPLOAD_PRESET in .env or Admin Settings.');
   }
 
-  const cleanFileName = file.name.replace(/[^a-zA-Z0-9_.-]/g, '_');
+  const nameWithoutExt = file.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_') || 'submission_file';
   const targetFolder = `hackathon/teams/${teamId}/${roundId}`;
-  const targetPublicId = `${Date.now()}_${cleanFileName}`;
+  const targetPublicId = `${Date.now()}_${nameWithoutExt}`;
 
   // 3. Send direct XMLHttpRequest to Cloudinary with explicit 45-second timeout
   return new Promise<CloudinaryUploadResult>((resolve, reject) => {
@@ -525,3 +525,54 @@ export async function removeSubmissionRecord(teamId: string, roundId: string): P
     // Cloud function is optional enhancement
   }
 }
+
+/**
+ * Resolves a reliable, browser-viewable URL for any submission asset.
+ * Supports PDFs, Images, Presentations, and Documents.
+ * Fixes Cloudinary 401 PDF delivery restrictions by utilizing high-fidelity f_auto delivery.
+ */
+export function getSubmissionViewUrl(
+  submission:
+    | Submission
+    | { fileUrl?: string; cloudinaryUrl?: string; fileName?: string; fileType?: string; format?: string }
+    | string
+    | null
+    | undefined
+): string {
+  if (!submission) return '';
+  const rawUrl = typeof submission === 'string' ? submission : (submission.cloudinaryUrl || submission.fileUrl || '');
+  let url = rawUrl.trim();
+  if (!url) return '';
+
+  const fileName = (typeof submission === 'object' ? submission.fileName : '') || '';
+  const isPdf =
+    fileName.toLowerCase().endsWith('.pdf') ||
+    url.toLowerCase().includes('.pdf') ||
+    (typeof submission === 'object' && ((submission.format || '').toLowerCase() === 'pdf' || (submission.fileType || '').toLowerCase().includes('pdf')));
+
+  // If this is a Cloudinary image-upload URL for a PDF document
+  if (isPdf && url.includes('res.cloudinary.com') && url.includes('/image/upload/')) {
+    if (!url.includes('/f_auto/') && !url.includes('/w_') && !url.includes('/pg_')) {
+      url = url.replace('/image/upload/', '/image/upload/f_auto/');
+    }
+  }
+
+  return url;
+}
+
+/**
+ * Resolves a reliable download URL for any submission asset.
+ */
+export function getSubmissionDownloadUrl(
+  submission:
+    | Submission
+    | { fileUrl?: string; cloudinaryUrl?: string; fileName?: string; fileType?: string }
+    | string
+    | null
+    | undefined
+): string {
+  if (!submission) return '';
+  const rawUrl = typeof submission === 'string' ? submission : (submission.cloudinaryUrl || submission.fileUrl || '');
+  return rawUrl.trim();
+}
+

@@ -50,7 +50,7 @@ import {
 } from '@ant-design/icons';
 import { subscribeToRounds } from '../../services/rounds.service';
 import { subscribeToTeams } from '../../services/accounts.service';
-import { subscribeToAllSubmissions } from '../../services/submissions.service';
+import { subscribeToAllSubmissions, getSubmissionViewUrl } from '../../services/submissions.service';
 import { subscribeToAllScores } from '../../services/scores.service';
 import {
   triggerAIEvaluation,
@@ -350,7 +350,7 @@ export const EvaluationsPage: React.FC = () => {
             </Tag>
             <Space size="small">
               {sub.fileUrl && (
-                <a href={sub.fileUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: '12px' }}>
+                <a href={getSubmissionViewUrl(sub)} target="_blank" rel="noopener noreferrer" style={{ fontSize: '12px' }}>
                   <LinkOutlined /> View File
                 </a>
               )}
@@ -633,7 +633,7 @@ export const EvaluationsPage: React.FC = () => {
                       <div>Deliverable: <Text strong>{currentSubmission.fileName || currentSubmission.fileType || 'Submission File'}</Text></div>
                       <div style={{ marginTop: 4, display: 'flex', gap: 12 }}>
                         {currentSubmission.fileUrl && (
-                          <a href={currentSubmission.fileUrl} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600 }}>
+                          <a href={getSubmissionViewUrl(currentSubmission)} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600 }}>
                             <LinkOutlined /> Inspect Submitted File
                           </a>
                         )}

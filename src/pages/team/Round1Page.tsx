@@ -34,6 +34,8 @@ import {
   removeSubmissionRecord,
   subscribeToTeamSubmissions,
   validateSubmissionFile,
+  getSubmissionViewUrl,
+  getSubmissionDownloadUrl,
 } from '../../services/submissions.service';
 import {
   subscribeToTimingConfig,
@@ -312,7 +314,7 @@ export const Round1Page: React.FC = () => {
                 <Button
                   type="primary"
                   icon={<EyeOutlined />}
-                  href={submission.fileUrl}
+                  href={getSubmissionViewUrl(submission)}
                   target="_blank"
                   rel="noopener noreferrer"
                   style={{ background: '#52c41a', borderColor: '#52c41a' }}
@@ -321,9 +323,9 @@ export const Round1Page: React.FC = () => {
                 </Button>
                 <Button
                   icon={<DownloadOutlined />}
-                  href={submission.fileUrl}
+                  href={getSubmissionDownloadUrl(submission)}
                   target="_blank"
-                  download
+                  download={submission.fileName || true}
                 >
                   Download
                 </Button>
@@ -345,7 +347,7 @@ export const Round1Page: React.FC = () => {
             {isImageFile(submission.fileName) && submission.fileUrl && (
               <div style={{ marginTop: 16 }}>
                 <Image
-                  src={submission.fileUrl}
+                  src={getSubmissionViewUrl(submission)}
                   alt="Architecture Diagram"
                   style={{ maxHeight: 300, borderRadius: 8, objectFit: 'contain' }}
                 />

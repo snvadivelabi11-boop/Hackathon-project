@@ -33,6 +33,8 @@ import {
   removeSubmissionRecord,
   subscribeToTeamSubmissions,
   validateSubmissionFile,
+  getSubmissionViewUrl,
+  getSubmissionDownloadUrl,
 } from '../../services/submissions.service';
 import {
   subscribeToTimingConfig,
@@ -305,7 +307,7 @@ export const Round2Page: React.FC = () => {
                 <Button
                   type="primary"
                   icon={<EyeOutlined />}
-                  href={submission.fileUrl}
+                  href={getSubmissionViewUrl(submission)}
                   target="_blank"
                   rel="noopener noreferrer"
                   style={{ background: '#52c41a', borderColor: '#52c41a' }}
@@ -314,9 +316,9 @@ export const Round2Page: React.FC = () => {
                 </Button>
                 <Button
                   icon={<DownloadOutlined />}
-                  href={submission.fileUrl}
+                  href={getSubmissionDownloadUrl(submission)}
                   target="_blank"
-                  download
+                  download={submission.fileName || true}
                 >
                   Download
                 </Button>
