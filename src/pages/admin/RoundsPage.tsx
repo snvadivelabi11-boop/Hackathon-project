@@ -87,16 +87,14 @@ export const RoundsPage: React.FC = () => {
       setInlineSchedules((prev) => {
         const next = { ...prev };
         rList.forEach((r) => {
-          if (!next[r.id]) {
-            const sM = toIST(r.startTime || r.scheduledStartAt);
-            const eM = toIST(r.endTime || r.scheduledEndAt);
-            next[r.id] = {
-              startDate: sM.format('YYYY-MM-DD'),
-              startTime: sM.format('h:mm A'),
-              endDate: eM.format('YYYY-MM-DD'),
-              endTime: eM.format('h:mm A'),
-            };
-          }
+          const sM = toIST(r.startTime || r.scheduledStartAt);
+          const eM = toIST(r.endTime || r.scheduledEndAt);
+          next[r.id] = {
+            startDate: sM.format('YYYY-MM-DD'),
+            startTime: sM.format('h:mm A'),
+            endDate: eM.format('YYYY-MM-DD'),
+            endTime: eM.format('h:mm A'),
+          };
         });
         return next;
       });
@@ -144,7 +142,11 @@ export const RoundsPage: React.FC = () => {
         startIso,
         endIso,
       });
-      message.success(`Schedule saved for ${round.name}. Status remains SCHEDULED until START ROUND is clicked.`);
+      setInlineSchedules((prev) => ({
+        ...prev,
+        [round.id]: vals,
+      }));
+      message.success(`Schedule saved for ${round.name}. Duration: ${calculateDurationFormatted(startIso, endIso)}.`);
     } catch (err: any) {
       message.error(err.message || 'Failed to save schedule.');
     } finally {
@@ -273,7 +275,11 @@ export const RoundsPage: React.FC = () => {
         startIso,
         endIso,
       });
-      message.success(`Schedule updated for ${selectedRound.name}.`);
+      setInlineSchedules((prev) => ({
+        ...prev,
+        [selectedRound.id]: modalSchedule,
+      }));
+      message.success(`Schedule updated for ${selectedRound.name}. Duration: ${calculateDurationFormatted(startIso, endIso)}.`);
       setIsEditModalOpen(false);
       setSelectedRound(null);
     } catch (err: any) {

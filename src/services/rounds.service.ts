@@ -172,36 +172,67 @@ export function subscribeToRound(roundId: string, callback: (round: Round | null
 
 /**
  * Starts / Activates a round explicitly via manual Admin action.
+ * Preserves the exact scheduled end time and keeps /rounds/{roundId} and /settings/timingConfig 100% in sync.
  */
 export async function startRound(roundId: string): Promise<void> {
+  const roundRef = doc(db, 'rounds', roundId);
+  const timingRef = doc(db, 'settings', 'timingConfig');
+  const snap = await getDoc(roundRef);
+  const nowIso = new Date().toISOString();
+
+  let endIso = snap.exists() ? (snap.data()?.endTime || snap.data()?.scheduledEndAt) : null;
+  let startIso = snap.exists() ? (snap.data()?.startTime || snap.data()?.scheduledStartAt) : null;
+
+  if (!startIso) startIso = nowIso;
+  if (!endIso) {
+    endIso = dayjs(startIso).add(12, 'hour').toISOString();
+  }
+
+  const roundKey = roundId.includes('1') ? 'round1' : roundId.includes('2') ? 'round2' : 'round3';
+
+  const batch = writeBatch(db);
+  batch.set(
+    roundRef,
+    {
+      status: 'ACTIVE',
+      actualStartedAt: serverTimestamp(),
+      activatedAt: serverTimestamp(),
+      startTime: startIso,
+      endTime: endIso,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  batch.set(
+    timingRef,
+    {
+      [roundKey]: {
+        status: 'ACTIVE',
+        statusOverride: 'FORCE_ACTIVE',
+        activatedAt: serverTimestamp(),
+        startIso: startIso,
+        endIso: endIso,
+      },
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  await batch.commit();
+
   try {
     const fn = httpsCallable(functions, 'startRound');
     await fn({ roundId });
-    return;
   } catch (err) {
-    console.warn('[RoundsService] Cloud Function startRound fallback to direct Firestore:', err);
+    // Cloud function is optional audit
   }
-
-  const roundRef = doc(db, 'rounds', roundId);
-  const snap = await getDoc(roundRef);
-
-  let endIso = snap.exists() ? snap.data()?.endTime : null;
-  if (!endIso) {
-    endIso = dayjs().add(5, 'day').toISOString();
-  }
-
-  await updateDoc(roundRef, {
-    status: 'ACTIVE',
-    actualStartedAt: serverTimestamp(),
-    activatedAt: serverTimestamp(),
-    endTime: endIso,
-    updatedAt: serverTimestamp(),
-  });
 }
 
 /**
  * Saves a round schedule with validation.
  * Core Principle: Schedule != Activate. Status becomes SCHEDULED.
+ * Synchronizes /rounds/{roundId} and /settings/timingConfig atomically.
  */
 export async function saveRoundSchedule(
   roundId: string,
@@ -214,49 +245,92 @@ export async function saveRoundSchedule(
     endIso: string;
   }
 ): Promise<void> {
-  try {
-    const fn = httpsCallable(functions, 'saveRoundSchedule');
-    await fn({ roundId, ...schedule });
-    return;
-  } catch (err) {
-    console.warn('[RoundsService] Cloud Function saveRoundSchedule fallback to direct Firestore:', err);
-  }
-
   const roundRef = doc(db, 'rounds', roundId);
+  const timingRef = doc(db, 'settings', 'timingConfig');
   const snap = await getDoc(roundRef);
   const currentStatus = snap.exists() ? snap.data()?.status : 'SCHEDULED';
   const status = (currentStatus === 'ACTIVE' || currentStatus === 'LIVE') ? currentStatus : 'SCHEDULED';
+  const roundKey = roundId.includes('1') ? 'round1' : roundId.includes('2') ? 'round2' : 'round3';
 
-  await updateDoc(roundRef, {
-    scheduledStartAt: schedule.startIso,
-    scheduledEndAt: schedule.endIso,
-    startTime: schedule.startIso,
-    endTime: schedule.endIso,
-    status: status,
-    updatedAt: serverTimestamp(),
-  });
+  const batch = writeBatch(db);
+  batch.set(
+    roundRef,
+    {
+      scheduledStartAt: schedule.startIso,
+      scheduledEndAt: schedule.endIso,
+      startTime: schedule.startIso,
+      endTime: schedule.endIso,
+      startDate: schedule.startDate,
+      startTimeFormatted: schedule.startTime,
+      endDate: schedule.endDate,
+      endTimeFormatted: schedule.endTime,
+      status: status,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  batch.set(
+    timingRef,
+    {
+      [roundKey]: {
+        startDate: schedule.startDate,
+        startTime: schedule.startTime,
+        endDate: schedule.endDate,
+        endTime: schedule.endTime,
+        startIso: schedule.startIso,
+        endIso: schedule.endIso,
+        status: status,
+      },
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  await batch.commit();
+
+  try {
+    const fn = httpsCallable(functions, 'saveRoundSchedule');
+    await fn({ roundId, ...schedule });
+  } catch (err) {
+    // Cloud function is optional audit
+  }
 }
 
-/**
- * Stops / Ends an active round immediately, setting status to ENDED.
- */
 export async function stopRound(roundId: string): Promise<void> {
-  try {
-    const fn = httpsCallable(functions, 'stopRound');
-    await fn({ roundId });
-    return;
-  } catch (err) {
-    console.warn('[RoundsService] Cloud Function stopRound fallback to direct Firestore:', err);
-  }
+  const roundKey = roundId.includes('1') ? 'round1' : roundId.includes('2') ? 'round2' : 'round3';
+  const nowIso = new Date().toISOString();
+  const batch = writeBatch(db);
 
-  const now = dayjs().toISOString();
-  await updateDoc(doc(db, 'rounds', roundId), {
+  batch.update(doc(db, 'rounds', roundId), {
     status: 'ENDED',
     actualEndedAt: serverTimestamp(),
     endedAt: serverTimestamp(),
-    endTime: now,
+    endTime: nowIso,
     updatedAt: serverTimestamp(),
   });
+
+  batch.set(
+    doc(db, 'settings', 'timingConfig'),
+    {
+      [roundKey]: {
+        status: 'ENDED',
+        statusOverride: 'FORCE_CLOSED',
+        endIso: nowIso,
+      },
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  await batch.commit();
+
+  try {
+    const fn = httpsCallable(functions, 'stopRound');
+    await fn({ roundId });
+  } catch (err) {
+    // Cloud function is optional audit
+  }
 }
 
 export const endRound = stopRound;

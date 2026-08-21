@@ -183,9 +183,9 @@ export function calculateRoundTimingEvaluation(
 
   const cfg = timingConfig?.[roundKey];
 
-  // Resolve start & end timestamps
-  let startIso = cfg?.startIso || roundDoc?.startTime || timingConfig?.hackathonStartIso;
-  let endIso = cfg?.endIso || roundDoc?.endTime || timingConfig?.hackathonEndIso;
+  // Resolve start & end timestamps - Round document is the primary authoritative source of truth
+  let startIso = roundDoc?.startTime || roundDoc?.scheduledStartAt || cfg?.startIso || timingConfig?.hackathonStartIso;
+  let endIso = roundDoc?.endTime || roundDoc?.scheduledEndAt || cfg?.endIso || timingConfig?.hackathonEndIso;
 
   if (!startIso) startIso = DEFAULT_TIMING_CONFIG.round1.startIso;
   if (!endIso) endIso = DEFAULT_TIMING_CONFIG.round1.endIso;

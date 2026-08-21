@@ -129,6 +129,8 @@ export const startRound = functions.https.onCall(async (data, context) => {
           statusOverride: 'FORCE_ACTIVE',
           activatedAt: now,
           activatedBy: adminEmail,
+          startIso: roundData.startTime || roundData.scheduledStartAt || now.toDate().toISOString(),
+          endIso: endTime,
         },
         updatedAt: now,
       },

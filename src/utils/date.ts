@@ -10,22 +10,34 @@ dayjs.extend(relativeTime);
 export const HACKATHON_TIMEZONE = 'Asia/Kolkata';
 
 /**
- * Converts 12-hour AM/PM time ("8:37 PM", "12:00 AM", "12:00 PM") to 24-hour "HH:mm"
+ * Converts 12-hour AM/PM or 24-hour time ("6:00 PM", "6:00 AM", "6:00 pm", "6 PM", "18:00", "06:00 AM", "12:00 AM", "12:00 PM") to 24-hour "HH:mm"
  */
-export function convert12HourTo24Hour(time12: string): string {
-  if (!time12) return '00:00';
-  const clean = time12.trim();
-  const match = clean.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-  if (!match) return clean;
+export function convert12HourTo24Hour(timeStr: string): string {
+  if (!timeStr) return '00:00';
+  const clean = timeStr.trim();
 
-  let hour = parseInt(match[1], 10);
-  const min = match[2];
-  const ampm = match[3].toUpperCase();
+  // Match e.g. "6:00 PM", "06:30 AM", "6:0 PM", "6 PM"
+  const match12 = clean.match(/^(\d{1,2})(?::(\d{1,2}))?\s*(AM|PM)$/i);
+  if (match12) {
+    let hour = parseInt(match12[1], 10);
+    const min = match12[2] ? match12[2].padStart(2, '0') : '00';
+    const ampm = match12[3].toUpperCase();
 
-  if (ampm === 'PM' && hour < 12) hour += 12;
-  if (ampm === 'AM' && hour === 12) hour = 0;
+    if (ampm === 'PM' && hour < 12) hour += 12;
+    if (ampm === 'AM' && hour === 12) hour = 0;
 
-  return `${String(hour).padStart(2, '0')}:${min}`;
+    return `${String(hour).padStart(2, '0')}:${min}`;
+  }
+
+  // Match 24-hour e.g. "18:00", "06:30"
+  const match24 = clean.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (match24) {
+    const hour = parseInt(match24[1], 10);
+    const min = match24[2].padStart(2, '0');
+    return `${String(hour).padStart(2, '0')}:${min}`;
+  }
+
+  return clean;
 }
 
 /**
@@ -139,15 +151,18 @@ export function formatISTScheduleRange(startDate?: any, endDate?: any): string {
 }
 
 /**
- * Safely parses Date (YYYY-MM-DD or DD-MM-YYYY) and 12-hour/24-hour Time ("8:37 PM", "20:37") into UTC ISO string
+ * Safely parses Date (DD-MM-YYYY, YYYY-MM-DD, DD/MM/YYYY) and 12-hour/24-hour Time ("6:00 PM", "18:00") into UTC ISO string in Asia/Kolkata timezone
  */
 export function parseDateAndTimeToIso(dateStr: string, timeStr: string): string {
   if (!dateStr || !timeStr) return '';
   try {
-    // Normalize date format
     let cleanDate = dateStr.trim();
-    if (/^\d{2}-\d{2}-\d{4}$/.test(cleanDate)) {
-      const [d, m, y] = cleanDate.split('-');
+    // Normalize DD-MM-YYYY or DD/MM/YYYY to YYYY-MM-DD
+    if (/^\d{1,2}[-/]\d{1,2}[-/]\d{4}$/.test(cleanDate)) {
+      const parts = cleanDate.split(/[-/]/);
+      const d = parts[0].padStart(2, '0');
+      const m = parts[1].padStart(2, '0');
+      const y = parts[2];
       cleanDate = `${y}-${m}-${d}`;
     }
 
@@ -157,7 +172,12 @@ export function parseDateAndTimeToIso(dateStr: string, timeStr: string): string 
       return parsed.toISOString();
     }
 
-    return dayjs(`${cleanDate} ${time24}`).toISOString();
+    const fallback = dayjs(`${cleanDate} ${time24}`);
+    if (fallback.isValid()) {
+      return fallback.toISOString();
+    }
+
+    return '';
   } catch {
     return '';
   }
@@ -165,7 +185,7 @@ export function parseDateAndTimeToIso(dateStr: string, timeStr: string): string 
 
 /**
  * Calculates and formats total duration between two dates/timestamps
- * e.g. "4 Days 0 Hours" or "4 Days 2 Hours 25 Minutes"
+ * e.g. "12 Hours", "8 Hours", "2 Hours", "3 Days", "1 Day 2 Hours"
  */
 export function calculateDurationFormatted(startDate?: any, endDate?: any): string {
   if (!startDate || !endDate) return '—';
@@ -183,11 +203,11 @@ export function calculateDurationFormatted(startDate?: any, endDate?: any): stri
     const mins = totalMinutes % 60;
 
     const parts: string[] = [];
-    if (days > 0) parts.push(`${days} Day${days === 1 ? '' : 's'}`);
-    if (hours > 0 || days > 0) parts.push(`${hours} Hour${hours === 1 ? '' : 's'}`);
-    if (mins > 0 && days === 0) parts.push(`${mins} Minute${mins === 1 ? '' : 's'}`);
+    if (days > 0) parts.push(`${days} ${days === 1 ? 'Day' : 'Days'}`);
+    if (hours > 0) parts.push(`${hours} ${hours === 1 ? 'Hour' : 'Hours'}`);
+    if (mins > 0) parts.push(`${mins} ${mins === 1 ? 'Minute' : 'Minutes'}`);
 
-    return parts.join(' ') || '0 Hours';
+    return parts.length > 0 ? parts.join(' ') : '0 Hours';
   } catch {
     return '—';
   }
