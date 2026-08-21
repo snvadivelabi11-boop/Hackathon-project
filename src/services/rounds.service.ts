@@ -286,6 +286,7 @@ export async function saveRoundSchedule(
         startAt: schedule.startIso,
         endAt: schedule.endIso,
         status: status,
+        statusOverride: status === 'ACTIVE' ? 'FORCE_ACTIVE' : 'AUTO',
       },
       updatedAt: serverTimestamp(),
     },

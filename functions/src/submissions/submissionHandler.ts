@@ -42,73 +42,42 @@ async function verifyRoundSubmissionWindow(db: admin.firestore.Firestore, roundI
   const now = admin.firestore.Timestamp.now();
   const serverMs = now.toMillis();
 
-  let effectiveStatus = roundData.status || 'SCHEDULED';
-  let endTimeMs: number | null = null;
-
+  let timingData: any = null;
   try {
     const timingDoc = await db.collection('settings').doc('timingConfig').get();
-    if (timingDoc.exists) {
-      const tData = timingDoc.data()!;
-      const rCfg = tData[roundKey];
-      if (rCfg?.status) {
-        effectiveStatus = rCfg.status;
-      }
-      if (rCfg?.endIso) {
-        endTimeMs = new Date(rCfg.endIso).getTime();
-      }
-    }
-  } catch (err: any) {
-    if (err instanceof functions.https.HttpsError) throw err;
+    if (timingDoc.exists) timingData = timingDoc.data();
+  } catch {}
+
+  const rCfg = timingData?.[roundKey];
+
+  // Resolve start & end timestamps - canonical priority
+  let startIso = roundData.startTime || roundData.scheduledStartAt || roundData.startAt || rCfg?.startIso || rCfg?.startAt || timingData?.hackathonStartIso;
+  let endIso = roundData.endTime || roundData.scheduledEndAt || roundData.endAt || rCfg?.endIso || rCfg?.endAt || timingData?.hackathonEndIso;
+
+  const startTimeMs = startIso ? new Date(startIso).getTime() : 0;
+  const endTimeMs = endIso ? new Date(endIso).getTime() : Number.MAX_SAFE_INTEGER;
+
+  const effectiveStatus = roundData.status || rCfg?.status || 'SCHEDULED';
+  const statusOverride = rCfg?.statusOverride;
+
+  // 1. Explicit LOCKED
+  if (effectiveStatus === 'LOCKED' || statusOverride === 'LOCKED') {
+    throw new functions.https.HttpsError('failed-precondition', `Round ${roundNum} is LOCKED by Administrator.`);
   }
 
-  if (endTimeMs === null && roundData.endTime) {
-    endTimeMs = typeof roundData.endTime.toMillis === 'function'
-      ? roundData.endTime.toMillis()
-      : new Date(roundData.endTime).getTime();
+  // 2. Explicit PAUSED
+  if (effectiveStatus === 'PAUSED') {
+    throw new functions.https.HttpsError('failed-precondition', `Round ${roundNum} is currently PAUSED by Administrator. Submissions are temporarily suspended.`);
   }
 
-  // 1. Check explicit non-active states
-  if (effectiveStatus === 'SCHEDULED' || roundData.status === 'SCHEDULED') {
-    throw new functions.https.HttpsError(
-      'failed-precondition',
-      `Round ${roundNum} has not started yet. Submissions open only after Administrator activation.`
-    );
+  // 3. Explicit or Deadline ENDED
+  if (effectiveStatus === 'ENDED' || statusOverride === 'FORCE_CLOSED' || serverMs >= endTimeMs) {
+    throw new functions.https.HttpsError('deadline-exceeded', `Round ${roundNum} submission period has ENDED. New submissions are closed.`);
   }
 
-  if (effectiveStatus === 'PAUSED' || roundData.status === 'PAUSED') {
-    throw new functions.https.HttpsError(
-      'failed-precondition',
-      `Round ${roundNum} is currently PAUSED by Administrator. Submissions are temporarily closed.`
-    );
-  }
-
-  if (effectiveStatus === 'LOCKED' || roundData.status === 'LOCKED') {
-    throw new functions.https.HttpsError(
-      'failed-precondition',
-      `Round ${roundNum} is LOCKED by Administrator.`
-    );
-  }
-
-  if (effectiveStatus === 'ENDED' || roundData.status === 'ENDED') {
-    throw new functions.https.HttpsError(
-      'deadline-exceeded',
-      `Round ${roundNum} has ENDED. New submissions are closed.`
-    );
-  }
-
-  if (effectiveStatus !== 'ACTIVE' && roundData.status !== 'ACTIVE') {
-    throw new functions.https.HttpsError(
-      'failed-precondition',
-      `Round ${roundNum} is not active for submissions.`
-    );
-  }
-
-  // 2. For ACTIVE round, check if deadline has passed in server time
-  if (endTimeMs !== null && !isNaN(endTimeMs) && serverMs > endTimeMs) {
-    throw new functions.https.HttpsError(
-      'deadline-exceeded',
-      `Submission period for Round ${roundNum} has ENDED. New submissions are closed.`
-    );
+  // 4. Upcoming check (before scheduled start time)
+  if (effectiveStatus !== 'ACTIVE' && effectiveStatus !== 'LIVE' && statusOverride !== 'FORCE_ACTIVE' && serverMs < startTimeMs) {
+    throw new functions.https.HttpsError('failed-precondition', `Round ${roundNum} submission has not started yet. Submissions open at the scheduled start time.`);
   }
 
   return { roundData, roundNum };

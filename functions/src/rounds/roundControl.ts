@@ -63,6 +63,7 @@ export const saveRoundSchedule = functions.https.onCall(async (data, context) =>
           startAt: startIso,
           endAt: endIso,
           status: status,
+          statusOverride: status === 'ACTIVE' ? 'FORCE_ACTIVE' : 'AUTO',
         },
         updatedAt: now,
       },

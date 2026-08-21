@@ -231,48 +231,7 @@ export function calculateRoundTimingEvaluation(
     };
   }
 
-  // 2. Explicit or Deadline ENDED
-  if (
-    effectiveStatus === 'ENDED' ||
-    cfg?.statusOverride === 'FORCE_CLOSED' ||
-    (effectiveStatus === 'ACTIVE' && diffEndMs <= 0) ||
-    (effectiveStatus === 'LIVE' && diffEndMs <= 0)
-  ) {
-    return {
-      state: 'ENDED',
-      isUploadAllowed: false,
-      statusMessage: 'Round has ended. Submissions are closed.',
-      badgeColor: 'red',
-      startTime,
-      endTime,
-      startsInSeconds: 0,
-      endsInSeconds: 0,
-      startsInFormatted: '00:00:00',
-      endsInFormatted: '00:00:00',
-    };
-  }
-
-  // 3. Explicit ACTIVE / LIVE (Set ONLY via manual Admin START action)
-  if (
-    effectiveStatus === 'ACTIVE' ||
-    effectiveStatus === 'LIVE' ||
-    cfg?.statusOverride === 'FORCE_ACTIVE'
-  ) {
-    return {
-      state: 'ACTIVE',
-      isUploadAllowed: true,
-      statusMessage: 'Round is LIVE and accepting submissions.',
-      badgeColor: 'green',
-      startTime,
-      endTime,
-      startsInSeconds: 0,
-      endsInSeconds,
-      startsInFormatted: '00:00:00',
-      endsInFormatted: formatCountdown(endsInSeconds),
-    };
-  }
-
-  // 4. Explicit PAUSED
+  // 2. Explicit PAUSED
   if (effectiveStatus === 'PAUSED') {
     return {
       state: 'PAUSED',
@@ -288,12 +247,52 @@ export function calculateRoundTimingEvaluation(
     };
   }
 
-  // 5. SCHEDULED / NOT_STARTED / UPCOMING (Manual Admin START required)
-  // Even if current time reaches/passes scheduled start time, round remains SCHEDULED until Admin clicks START ROUND.
+  // 3. Explicit or Deadline ENDED (currentTime >= endAt)
+  if (
+    effectiveStatus === 'ENDED' ||
+    cfg?.statusOverride === 'FORCE_CLOSED' ||
+    diffEndMs <= 0
+  ) {
+    return {
+      state: 'ENDED',
+      isUploadAllowed: false,
+      statusMessage: 'Round has ended. Submissions are closed.',
+      badgeColor: 'red',
+      startTime,
+      endTime,
+      startsInSeconds: 0,
+      endsInSeconds: 0,
+      startsInFormatted: '00:00:00',
+      endsInFormatted: '00:00:00',
+    };
+  }
+
+  // 4. OPEN / LIVE (currentTime >= startAt AND currentTime < endAt, or explicit Admin START)
+  if (
+    effectiveStatus === 'ACTIVE' ||
+    effectiveStatus === 'LIVE' ||
+    cfg?.statusOverride === 'FORCE_ACTIVE' ||
+    diffStartMs <= 0
+  ) {
+    return {
+      state: 'ACTIVE',
+      isUploadAllowed: true,
+      statusMessage: 'Round is LIVE and accepting submissions.',
+      badgeColor: 'green',
+      startTime,
+      endTime,
+      startsInSeconds: 0,
+      endsInSeconds,
+      startsInFormatted: '00:00:00',
+      endsInFormatted: formatCountdown(endsInSeconds),
+    };
+  }
+
+  // 5. UPCOMING / NOT_STARTED / SCHEDULED (currentTime < startAt)
   return {
     state: 'SCHEDULED',
     isUploadAllowed: false,
-    statusMessage: 'Waiting for Admin to start this round.',
+    statusMessage: 'Round has not started yet. Submissions open at scheduled time.',
     badgeColor: 'blue',
     startTime,
     endTime,

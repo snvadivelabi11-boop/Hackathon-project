@@ -13,6 +13,7 @@ import {
 } from 'firebase/firestore';
 import { db, auth } from '../firebase/config';
 import { Submission } from '../types';
+import { calculateRoundTimingEvaluation } from './timing.service';
 
 export interface CloudinaryUploadResult {
   downloadUrl: string;
@@ -309,11 +310,23 @@ export async function submitFileRecord(
   roundId: string,
   fileData: CloudinaryUploadResult
 ): Promise<Submission> {
-  // Validate round active window in Firestore
+  // Validate round active window against authoritative timing evaluation
   const roundDoc = await getDoc(doc(db, 'rounds', roundId)).catch(() => null);
-  if (roundDoc && roundDoc.exists()) {
-    const rData = roundDoc.data();
-    if (rData.status !== 'ACTIVE') {
+  const timingDoc = await getDoc(doc(db, 'settings', 'timingConfig')).catch(() => null);
+  const roundData = roundDoc && roundDoc.exists() ? (roundDoc.data() as any) : null;
+  const timingData = timingDoc && timingDoc.exists() ? (timingDoc.data() as any) : null;
+
+  const evalResult = calculateRoundTimingEvaluation(roundId, timingData, roundData);
+  if (!evalResult.isUploadAllowed) {
+    if (evalResult.state === 'SCHEDULED' || evalResult.state === 'UPCOMING' || evalResult.state === 'NOT_STARTED') {
+      throw new Error(`Round ${roundId.replace('round', '')} submission has not started yet. Submissions open at the scheduled start time.`);
+    } else if (evalResult.state === 'ENDED') {
+      throw new Error(`Round ${roundId.replace('round', '')} submission period has ended. New submissions are closed.`);
+    } else if (evalResult.state === 'PAUSED') {
+      throw new Error(`Round ${roundId.replace('round', '')} is currently paused by Administrator. Submissions are temporarily closed.`);
+    } else if (evalResult.state === 'LOCKED') {
+      throw new Error(`Round ${roundId.replace('round', '')} is locked by Administrator.`);
+    } else {
       throw new Error(`Round ${roundId.replace('round', '')} submission is currently closed.`);
     }
   }
@@ -324,7 +337,7 @@ export async function submitFileRecord(
 
   // Check duplicate submission rules
   if (existingDoc && existingDoc.exists()) {
-    if (roundDoc && roundDoc.exists() && roundDoc.data()?.allowResubmission === false) {
+    if (roundData && roundData.allowResubmission === false) {
       throw new Error(`Submission already received for Round ${roundId.replace('round', '')}. Resubmission is disabled.`);
     }
   }
@@ -353,8 +366,10 @@ export async function submitFileRecord(
   };
 
   const firestorePayload = {
+    id: subId,
     teamId,
     teamName,
+    roundId,
     round: roundNum,
     submissionType: roundNum === 1 ? 'architecture' : 'ppt',
     fileName: fileData.fileName,
@@ -401,9 +416,21 @@ export async function submitGithubRecord(
   payload: { githubUrl: string; prototypeUrl?: string; notes?: string }
 ): Promise<Submission> {
   const roundDoc = await getDoc(doc(db, 'rounds', roundId)).catch(() => null);
-  if (roundDoc && roundDoc.exists()) {
-    const rData = roundDoc.data();
-    if (rData.status !== 'ACTIVE') {
+  const timingDoc = await getDoc(doc(db, 'settings', 'timingConfig')).catch(() => null);
+  const roundData = roundDoc && roundDoc.exists() ? (roundDoc.data() as any) : null;
+  const timingData = timingDoc && timingDoc.exists() ? (timingDoc.data() as any) : null;
+
+  const evalResult = calculateRoundTimingEvaluation(roundId, timingData, roundData);
+  if (!evalResult.isUploadAllowed) {
+    if (evalResult.state === 'SCHEDULED' || evalResult.state === 'UPCOMING' || evalResult.state === 'NOT_STARTED') {
+      throw new Error('Round 3 submission has not started yet. Submissions open at the scheduled start time.');
+    } else if (evalResult.state === 'ENDED') {
+      throw new Error('Round 3 submission period has ended. New submissions are closed.');
+    } else if (evalResult.state === 'PAUSED') {
+      throw new Error('Round 3 is currently paused by Administrator. Submissions are temporarily closed.');
+    } else if (evalResult.state === 'LOCKED') {
+      throw new Error('Round 3 is locked by Administrator.');
+    } else {
       throw new Error('Round 3 submission is currently closed.');
     }
   }
@@ -432,11 +459,13 @@ export async function submitGithubRecord(
   };
 
   const firestorePayload = {
+    id: subId,
     teamId,
     teamName,
+    roundId,
     round: 3,
-    submissionType: 'prototype',
     type: 'github',
+    submissionType: 'github',
     githubUrl: payload.githubUrl.trim(),
     repositoryUrl: payload.githubUrl.trim(),
     prototypeUrl: payload.prototypeUrl?.trim() || '',
