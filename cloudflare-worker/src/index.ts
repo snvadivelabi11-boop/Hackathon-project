@@ -46,7 +46,7 @@ export interface AnalyzedProblemOutputItem {
   aiModelUsed?: string | null;
 }
 
-const BATCH_CHUNK_SIZE = 15;
+const BATCH_CHUNK_SIZE = 12;
 const CONCURRENCY_LIMIT = 2;
 const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
 
@@ -352,6 +352,78 @@ function generateFallbackResults(items: CsvProblemInputItem[]): AnalyzedProblemO
 }
 
 /**
+ * Safely parses and extracts structured problem statements from Gemini response
+ */
+function parseGeminiStructuredJson(aiResponseText: string): any[] {
+  if (!aiResponseText || typeof aiResponseText !== 'string') {
+    throw new Error('STRUCTURED_OUTPUT_ERROR: Gemini returned an empty text payload.');
+  }
+
+  // 1. Clean markdown code fences and control characters
+  let cleaned = aiResponseText
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```\s*$/i, '')
+    .trim();
+
+  // 2. Direct JSON.parse attempt
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && Array.isArray(parsed.problems)) return parsed.problems;
+    if (parsed && Array.isArray(parsed.results)) return parsed.results;
+    if (parsed && Array.isArray(parsed.items)) return parsed.items;
+  } catch {
+    // Continue to next extraction strategy
+  }
+
+  // 3. Extract outermost JSON array or object
+  const startIdx = cleaned.indexOf('[');
+  const endIdx = cleaned.lastIndexOf(']');
+  if (startIdx !== -1 && endIdx > startIdx) {
+    try {
+      const arrayJson = JSON.parse(cleaned.substring(startIdx, endIdx + 1));
+      if (Array.isArray(arrayJson) && arrayJson.length > 0) return arrayJson;
+    } catch {
+      // Continue
+    }
+  }
+
+  const objStart = cleaned.indexOf('{');
+  const objEnd = cleaned.lastIndexOf('}');
+  if (objStart !== -1 && objEnd > objStart) {
+    try {
+      const objJson = JSON.parse(cleaned.substring(objStart, objEnd + 1));
+      if (Array.isArray(objJson.problems)) return objJson.problems;
+      if (Array.isArray(objJson.results)) return objJson.results;
+      if (Array.isArray(objJson.items)) return objJson.items;
+    } catch {
+      // Continue
+    }
+  }
+
+  // 4. Robust Individual Item Regex Extractor for truncated or trailing-comma responses
+  const extractedItems: any[] = [];
+  const itemRegex = /\{[^{}]*"sequence"\s*:\s*\d+[^{}]*\}/g;
+  let match: RegExpExecArray | null;
+  while ((match = itemRegex.exec(cleaned)) !== null) {
+    try {
+      const parsedItem = JSON.parse(match[0]);
+      if (parsedItem && typeof parsedItem === 'object') {
+        extractedItems.push(parsedItem);
+      }
+    } catch {
+      // Skip malformed individual snippet
+    }
+  }
+
+  if (extractedItems.length > 0) {
+    return extractedItems;
+  }
+
+  throw new Error('STRUCTURED_OUTPUT_ERROR: Failed to parse structured JSON response from Google Gemini AI.');
+}
+
+/**
  * Calls Google Gemini API with structured JSON output and candidate model fallback
  */
 async function callGemini(
@@ -386,7 +458,7 @@ async function callGemini(
           generationConfig: {
             responseMimeType: 'application/json',
             temperature: 0.1,
-            maxOutputTokens: 4000,
+            maxOutputTokens: 8192,
           },
         }),
         signal: controller.signal,
@@ -607,29 +679,11 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
           const prompt = buildBatchPrompt(chunk);
           try {
             const { content: aiResponseText, modelUsed } = await callGemini(prompt, apiKey, model);
-
-            const cleaned = aiResponseText
-              .replace(/^```(?:json)?\s*/i, '')
-              .replace(/\s*```\s*$/i, '')
-              .trim();
-
-            let parsedJson = JSON.parse(cleaned);
-
-            if (!Array.isArray(parsedJson)) {
-              if (parsedJson && Array.isArray(parsedJson.problems)) {
-                parsedJson = parsedJson.problems;
-              } else if (parsedJson && Array.isArray(parsedJson.results)) {
-                parsedJson = parsedJson.results;
-              } else if (parsedJson && Array.isArray(parsedJson.items)) {
-                parsedJson = parsedJson.items;
-              } else {
-                throw new Error('STRUCTURED_OUTPUT_ERROR: Gemini response is missing problems array.');
-              }
-            }
+            const parsedItems = parseGeminiStructuredJson(aiResponseText);
 
             // Strict 1:1 mapping against chunk inputs
             const mappedResults = chunk.map((inputItem, cIdx) => {
-              const matched = parsedJson.find((p: any) => p.sequence === (inputItem.sequence || inputItem.index)) || parsedJson[cIdx];
+              const matched = parsedItems.find((p: any) => p.sequence === (inputItem.sequence || inputItem.index)) || parsedItems[cIdx];
               return normalizeAnalyzedItem(matched, inputItem, inputItem.sequence || inputItem.index || cIdx + 1, true, modelUsed);
             });
 
@@ -668,6 +722,11 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
             }
           }
           allAnalyzedResults.push(...output.results);
+        }
+
+        // Small inter-batch pause to maintain steady API throughput
+        if (b + CONCURRENCY_LIMIT < chunks.length) {
+          await new Promise((resolve) => setTimeout(resolve, 300));
         }
       }
 

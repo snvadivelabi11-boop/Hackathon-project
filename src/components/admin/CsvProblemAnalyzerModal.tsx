@@ -89,7 +89,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
   const [aiStatus, setAiStatus] = useState<'Processing' | 'Completed' | 'Partial' | 'Failed' | 'Idle'>('Idle');
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiProgress, setAiProgress] = useState<number>(0);
-  const [aiProgressText, setAiProgressText] = useState<string>('Preparing dataset for Claude AI analysis...');
+  const [aiProgressText, setAiProgressText] = useState<string>('Preparing dataset for Google Gemini AI analysis...');
 
   // Saving State
   const [saving, setSaving] = useState<boolean>(false);
@@ -109,7 +109,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
     setAiStatus('Idle');
     setAiError(null);
     setAiProgress(0);
-    setAiProgressText('Preparing dataset for Claude AI analysis...');
+    setAiProgressText('Preparing dataset for Google Gemini AI analysis...');
     setSaving(false);
     setSavedCount(0);
   };
@@ -178,13 +178,13 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
       return;
     }
 
-    // 2. If valid questions exist, run OpenRouter Claude Analysis
+    // 2. If valid questions exist, run Google Gemini AI Analysis
     if (localResult.validItemsToSave.length > 0) {
       setStep(2);
       setAiReviewing(true);
       setAiStatus('Processing');
       setAiProgress(10);
-      setAiProgressText(`Preparing ${localResult.validItemsToSave.length} problem statements for Claude AI analysis...`);
+      setAiProgressText(`Preparing ${localResult.validItemsToSave.length} problem statements for Google Gemini AI analysis...`);
 
       try {
         const aiResponse = await requestCsvAiAnalysis(
@@ -606,7 +606,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
           <div>
             <Alert
               message="Upload Problem Statements CSV"
-              description="Upload your CSV file containing problem statements (columns: Problem Statement ID, Category, Team, Organization, Department, Description). The Analyzer reads all rows, extracts metadata, executes OpenRouter Claude AI analysis, and presents the structured results for review."
+              description="Upload your CSV file containing problem statements (columns: Problem Statement ID, Category, Team, Organization, Department, Description). The Analyzer reads all rows, extracts metadata, executes Google Gemini AI analysis, and presents the structured results for review."
               type="info"
               showIcon
               style={{ marginBottom: 20, borderRadius: 8 }}

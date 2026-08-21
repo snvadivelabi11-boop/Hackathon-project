@@ -316,7 +316,7 @@ export const ProblemStatementsPage: React.FC = () => {
     }
   };
 
-  // Bulk Upload Flow (OpenRouter AI Extraction)
+  // Bulk Upload Flow (Google Gemini AI Extraction)
   const handleOpenBulkModal = () => {
     setBulkStep(0);
     setUploadedFile(null);
@@ -361,7 +361,7 @@ export const ProblemStatementsPage: React.FC = () => {
       setProcessingPercent(20);
       const text = await extractTextFromFile(uploadedFile);
 
-      setProcessingStage('OpenRouter AI analyzing document & structuring distinct challenges...');
+      setProcessingStage('Google Gemini AI analyzing document & structuring distinct challenges...');
       setProcessingPercent(50);
       await new Promise((r) => setTimeout(r, 600));
 
@@ -374,7 +374,7 @@ export const ProblemStatementsPage: React.FC = () => {
       setParsedProblems(parsed);
 
       setBulkStep(2);
-      message.success(`OpenRouter AI extracted ${parsed.length} structured problem statements!`);
+      message.success(`Google Gemini AI extracted ${parsed.length} structured problem statements!`);
     } catch (err: any) {
       console.error('AI Parsing Error:', err);
       setProcessingError(err.message || 'AI could not parse the document correctly. Please retry.');
@@ -1199,7 +1199,7 @@ export const ProblemStatementsPage: React.FC = () => {
         title={
           <Space>
             <RobotOutlined style={{ color: '#722ed1', fontSize: '20px' }} />
-            <span style={{ fontWeight: 700, fontSize: '16px' }}>OpenRouter AI Bulk Problem Statement Import</span>
+            <span style={{ fontWeight: 700, fontSize: '16px' }}>Google Gemini AI Bulk Problem Statement Import</span>
           </Space>
         }
         open={isBulkModalOpen}
@@ -1225,7 +1225,7 @@ export const ProblemStatementsPage: React.FC = () => {
             <div>
               <Alert
                 message="Upload Problem Statement Document"
-                description="Upload one document (PDF, DOCX, TXT, CSV, JSON). OpenRouter AI will structure all problem statements into Draft records without publishing."
+                description="Upload one document (PDF, DOCX, TXT, CSV, JSON). Google Gemini AI will structure all problem statements into Draft records without publishing."
                 type="info"
                 showIcon
                 style={{ marginBottom: 20, borderRadius: 8 }}
@@ -1275,7 +1275,7 @@ export const ProblemStatementsPage: React.FC = () => {
                   disabled={!uploadedFile}
                   style={{ background: '#722ed1', borderColor: '#722ed1', fontWeight: 600 }}
                 >
-                  Extract with OpenRouter AI
+                  Extract with Google Gemini AI
                 </Button>
               </div>
             </div>
@@ -1290,7 +1290,7 @@ export const ProblemStatementsPage: React.FC = () => {
                     {processingStage || 'Processing document...'}
                   </Title>
                   <Paragraph type="secondary" style={{ maxWidth: 450, margin: '0 auto 24px' }}>
-                    OpenRouter AI is structuring problem statements into strict draft records.
+                    Google Gemini AI is structuring problem statements into strict draft records.
                   </Paragraph>
                   <Progress percent={processingPercent} status="active" strokeColor="#722ed1" style={{ maxWidth: 400 }} />
                 </div>
