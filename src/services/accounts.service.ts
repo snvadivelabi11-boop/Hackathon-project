@@ -282,7 +282,26 @@ export async function createTeamAccount(input: CreateAccountInput): Promise<Crea
       selectedStatementId,
     });
     if (response.data?.success) {
-      return response.data;
+      const data = response.data;
+      if (!data.assignedStatementId) {
+        try {
+          const { assignNextSequentialProblemToTeam } = await import('./problemAssignment.service');
+          const assignRes = await assignNextSequentialProblemToTeam(
+            data.teamId,
+            teamName,
+            auth.currentUser ? { uid: auth.currentUser.uid, email: auth.currentUser.email } : undefined
+          );
+          if (assignRes.success && assignRes.assigned) {
+            data.assignedStatementId = assignRes.statementId;
+            data.assignedStatementTitle = assignRes.statementTitle;
+            data.assignedProblemSequence = assignRes.problemSequence;
+            data.message = `Team account created for ${teamName} (${data.teamId}) and automatically assigned Problem #${assignRes.problemSequence} (${assignRes.statementId}: "${assignRes.statementTitle}").`;
+          }
+        } catch (e: any) {
+          console.warn('[AccountsService] Post-cloud-fn auto-assignment notice:', e.message);
+        }
+      }
+      return data;
     }
   } catch (cloudFnError: any) {
     console.warn('[AccountsService] Cloud Function creation unavailable/failed, executing direct Firebase creation:', cloudFnError);

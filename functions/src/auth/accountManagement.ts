@@ -370,6 +370,91 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
       { teamName: trimmedTeamName, leaderName: trimmedLeaderName, username: normalizedUsername }
     );
 
+    // 8. Auto-assign first available Problem Statement to the newly created team
+    let assignedStatementId: string | null = null;
+    let assignedStatementTitle: string | null = null;
+    let assignedProblemSequence: number | null = null;
+
+    try {
+      const occupiedSet = await getComprehensiveOccupiedStatementIdsBackend(db, allocatedTeamId);
+      const psSnap = await db.collection('problemStatements').get();
+
+      if (!psSnap.empty) {
+        const allStatements: any[] = [];
+        psSnap.forEach((d) => {
+          allStatements.push({ statementId: d.id, ...d.data() });
+        });
+
+        allStatements.sort((a, b) => {
+          const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence !== undefined && a.sequence !== null ? a.sequence : 0);
+          const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence !== undefined && b.sequence !== null ? b.sequence : 0);
+          if (ordA !== ordB) return ordA - ordB;
+          return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
+        });
+
+        const candidate = allStatements.find((c) => !isStatementOccupiedBackend(c, occupiedSet, allocatedTeamId));
+
+        if (candidate) {
+          const isPublished = candidate.status === 'published' || candidate.status === 'PUBLISHED' || candidate.status === 'active';
+          const seq = candidate.order !== undefined && candidate.order !== null ? candidate.order : (candidate.sequence || 1);
+          const candidateTitle = candidate.title || candidate.statementTitle || `Problem Statement #${seq}`;
+
+          const assignRef = db.collection('teamProblemAssignments').doc(allocatedTeamId);
+          const teamDocRef = db.collection('teams').doc(allocatedTeamId);
+          const psDocRef = db.collection('problemStatements').doc(candidate.statementId);
+
+          const batch = db.batch();
+          batch.set(assignRef, {
+            teamId: allocatedTeamId,
+            statementId: candidate.statementId,
+            problemStatementId: candidate.statementId,
+            problemSequence: seq,
+            order: seq,
+            statementTitle: candidateTitle,
+            description: candidate.description || '',
+            category: candidate.category || 'General',
+            difficulty: candidate.difficulty || 'MEDIUM',
+            team: trimmedTeamName,
+            assignedAt: new Date().toISOString(),
+            assignedBy: context.auth?.token.email || context.auth?.uid || 'system',
+            assignedByUid: context.auth?.uid || 'system',
+            assignmentSource: 'AUTOMATIC_SEQUENTIAL_ON_TEAM_CREATE',
+            status: isPublished ? 'PUBLISHED' : 'DRAFT',
+            publishedAt: isPublished ? new Date().toISOString() : null,
+          });
+
+          batch.update(teamDocRef, {
+            assignedStatementId: candidate.statementId,
+            assignedStatementTitle: candidateTitle,
+            assignedProblemId: candidate.statementId,
+            assignedProblemCode: candidate.statementId,
+            assignedProblemOrder: seq,
+            assignedProblemSequence: seq,
+            assignmentStatus: 'ASSIGNED',
+            assignmentLocked: false,
+            assignmentSource: 'AUTOMATIC_SEQUENTIAL_ON_TEAM_CREATE',
+            assignedAt: new Date().toISOString(),
+            updatedAt: now,
+          });
+
+          batch.update(psDocRef, {
+            assignedTeamId: allocatedTeamId,
+            assignedTeamName: trimmedTeamName,
+            assignedTeamIds: [allocatedTeamId],
+            updatedAt: now,
+          });
+
+          await batch.commit();
+
+          assignedStatementId = candidate.statementId;
+          assignedStatementTitle = candidateTitle;
+          assignedProblemSequence = seq;
+        }
+      }
+    } catch (assignErr: any) {
+      console.warn('[CloudFunction] Auto-assign on team creation notice:', assignErr.message);
+    }
+
     return {
       success: true,
       teamId: allocatedTeamId,
@@ -377,10 +462,12 @@ export const createTeamAccount = functions.https.onCall(async (data, context) =>
       leaderName: trimmedLeaderName,
       username: normalizedUsername,
       authUid: userRecord.uid,
-      assignedStatementId: null,
-      assignedStatementTitle: null,
-      assignedProblemSequence: null,
-      message: `Team ${allocatedTeamId} created successfully!`,
+      assignedStatementId,
+      assignedStatementTitle,
+      assignedProblemSequence,
+      message: assignedStatementId
+        ? `Team account created for ${trimmedTeamName} (${allocatedTeamId}) and automatically assigned Problem #${assignedProblemSequence} (${assignedStatementId}: "${assignedStatementTitle}").`
+        : `Team account created successfully for ${trimmedTeamName} (${allocatedTeamId}).`,
     };
   } catch (error: any) {
     console.error('Error during team account creation:', error);
