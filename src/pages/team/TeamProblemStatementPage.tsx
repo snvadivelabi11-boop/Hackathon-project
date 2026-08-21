@@ -25,6 +25,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useScoring } from '../../contexts/ScoringContext';
 import { subscribeToTeamAssignment } from '../../services/problems.service';
+import { subscribeToTeamProblemAnnouncement } from '../../services/problemAssignment.service';
 import { TeamProblemAssignment } from '../../types';
 import { formatISTDateTime } from '../../utils/date';
 
@@ -37,11 +38,16 @@ export const TeamProblemStatementPage: React.FC = () => {
   const navigate = useNavigate();
 
   const [assignment, setAssignment] = useState<TeamProblemAssignment | null>(null);
+  const [announcement, setAnnouncement] = useState<any | null>(null);
 
   useEffect(() => {
     if (!teamId) return;
     const unsub = subscribeToTeamAssignment(teamId, setAssignment);
-    return () => unsub();
+    const unsubAnn = subscribeToTeamProblemAnnouncement(teamId, setAnnouncement);
+    return () => {
+      unsub();
+      unsubAnn();
+    };
   }, [teamId]);
 
   return (
@@ -62,6 +68,36 @@ export const TeamProblemStatementPage: React.FC = () => {
           Your team's official challenge assigned by the Hackathon committee for Round 1 ({round1MaxMarks}m), Round 2 ({round2MaxMarks}m), and Round 3 ({round3MaxMarks}m) • Total {totalMaxMarks} Marks
         </Text>
       </div>
+
+      {announcement && announcement.isPublished && (
+        <Alert
+          message={
+            <Space>
+              <ThunderboltOutlined style={{ color: '#7c3aed', fontSize: '18px' }} />
+              <span style={{ fontWeight: 800, fontSize: '15px', color: '#5b21b6' }}>
+                Official Problem Statement Assignment Announcement
+              </span>
+            </Space>
+          }
+          description={
+            <div style={{ marginTop: 6, fontSize: '14px', color: '#334155' }}>
+              <div>{announcement.announcementText}</div>
+              <div style={{ marginTop: 4, fontSize: '12px', color: '#64748b' }}>
+                Announced by Hackathon Administration • {formatISTDateTime(announcement.announcedAt)}
+              </div>
+            </div>
+          }
+          type="info"
+          showIcon={false}
+          style={{
+            marginBottom: 24,
+            borderRadius: 12,
+            border: '1px solid #ddd6fe',
+            background: 'linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%)',
+            padding: '16px 20px',
+          }}
+        />
+      )}
 
       {assignment && assignment.status === 'PUBLISHED' ? (
         <div>

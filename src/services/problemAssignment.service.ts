@@ -952,91 +952,14 @@ export async function assignExistingTeamsAfterImport(
   };
 
   try {
-    // 1. Read all teams
-    const teamsSnap = await getDocs(collection(db, 'teams'));
-    const allTeams: Team[] = [];
-    teamsSnap.forEach((d) => {
-      allTeams.push({ teamId: d.id, ...d.data() } as Team);
-    });
-
-    if (allTeams.length === 0) {
-      console.log('[PostImportAssignment] No teams found. Nothing to assign.');
-      return result;
-    }
-
-    // 2. Read all problem statements
-    const psSnap = await getDocs(collection(db, 'problemStatements'));
-    const allStatements: ProblemStatement[] = [];
-    psSnap.forEach((d) => {
-      allStatements.push({ statementId: d.id, ...d.data() } as ProblemStatement);
-    });
-
-    if (allStatements.length === 0) {
-      console.log('[PostImportAssignment] No problem statements found. Nothing to assign.');
-      return result;
-    }
-
-    // 3. Read existing assignments to check occupancy
-    const assignSnap = await getDocs(collection(db, 'teamProblemAssignments')).catch(() => null);
-    const existingAssignments = new Set<string>();
-    if (assignSnap) {
-      assignSnap.forEach((d) => {
-        existingAssignments.add(d.id); // teamId
-      });
-    }
-
-    result.totalTeams = allTeams.length;
-
-    // 4. Sort teams by numeric sequence for deterministic processing
-    const sortedTeams = [...allTeams].sort((a, b) => {
-      const numA = parseInt(a.teamId.match(/\d+/)?.[0] || '0', 10);
-      const numB = parseInt(b.teamId.match(/\d+/)?.[0] || '0', 10);
-      return numA - numB;
-    });
-
-    // 5. Process each team
-    for (const team of sortedTeams) {
-      // Check if team already has any persisted assignment
-      const hasExistingAssignment =
-        existingAssignments.has(team.teamId) ||
-        !!(team.assignedStatementId && team.assignedStatementId.trim().length > 0) ||
-        !!(team.assignedProblemId && (team.assignedProblemId as string).trim().length > 0) ||
-        !!(team.problemStatementId && (team.problemStatementId as string).trim().length > 0) ||
-        team.assignmentStatus === 'ASSIGNED';
-
-      if (hasExistingAssignment) {
-        result.alreadyAssigned++;
-        continue;
-      }
-
-      // Assign first available problem using the atomic transaction function
-      try {
-        const assignResult = await assignNextSequentialProblemToTeam(
-          team.teamId,
-          team.teamName,
-          adminUser
-        );
-
-        if (assignResult.success && assignResult.assigned) {
-          result.assigned++;
-          existingAssignments.add(team.teamId);
-        } else if (assignResult.alreadyAssigned) {
-          result.alreadyAssigned++;
-          existingAssignments.add(team.teamId);
-        } else {
-          result.skipped++;
-          if (assignResult.message) {
-            result.conflicts.push(`${team.teamId}: ${assignResult.message}`);
-          }
-        }
-      } catch (err: any) {
-        result.errors.push(`${team.teamId}: ${err.message}`);
-        result.skipped++;
-      }
-    }
+    const syncRes = await persistOrderWiseAssignments(adminUser);
+    result.totalTeams = syncRes.totalTeams;
+    result.assigned = syncRes.assignedCount - syncRes.preservedCount;
+    result.alreadyAssigned = syncRes.preservedCount;
+    result.skipped = syncRes.unassignedTeamsCount;
 
     console.log(
-      `[PostImportAssignment] Complete: ${result.assigned} assigned, ${result.alreadyAssigned} already assigned, ${result.skipped} skipped, ${result.conflicts.length} conflicts, ${result.errors.length} errors`
+      `[PostImportAssignment] Complete: ${syncRes.assignedCount} total assigned (${syncRes.preservedCount} preserved, ${result.assigned} new), ${syncRes.unassignedTeamsCount} unassigned`
     );
 
     return result;
@@ -1045,6 +968,318 @@ export async function assignExistingTeamsAfterImport(
     result.errors.push(`Fatal error: ${err.message}`);
     return result;
   }
+}
+
+/**
+ * Synchronizes and persists deterministic 1-to-1 order-wise assignments directly in Firestore.
+ * - Sorts teams and problem statements deterministically (Team 1 -> Problem 1, Team 2 -> Problem 2, ...).
+ * - Preserves all valid existing assignments without altering them.
+ * - Writes to /teamProblemAssignments/{teamId}, /teams/{teamId}, and /problemStatements/{statementId} in atomic batches.
+ */
+export async function persistOrderWiseAssignments(
+  adminUser?: { uid?: string; email?: string | null }
+): Promise<{ success: boolean; totalTeams: number; assignedCount: number; preservedCount: number; unassignedTeamsCount: number; message: string }> {
+  const [teamsSnap, psSnap] = await Promise.all([
+    getDocs(collection(db, 'teams')),
+    getDocs(collection(db, 'problemStatements')),
+  ]);
+
+  const allTeams: Team[] = [];
+  teamsSnap.forEach((d) => allTeams.push({ teamId: d.id, ...d.data() } as Team));
+
+  const allStatements: ProblemStatement[] = [];
+  psSnap.forEach((d) => allStatements.push({ statementId: d.id, ...d.data() } as ProblemStatement));
+
+  if (allStatements.length === 0) {
+    return {
+      success: true,
+      totalTeams: allTeams.length,
+      assignedCount: 0,
+      preservedCount: 0,
+      unassignedTeamsCount: allTeams.length,
+      message: 'No problem statements available to assign.',
+    };
+  }
+
+  // 1. Sort statements by order/sequence/statementId
+  const sortedStatements = [...allStatements].sort((a, b) => {
+    const ordA = a.order !== undefined && a.order !== null ? a.order : (a.sequence || 0);
+    const ordB = b.order !== undefined && b.order !== null ? b.order : (b.sequence || 0);
+    if (ordA !== ordB) return ordA - ordB;
+    return a.statementId.localeCompare(b.statementId, undefined, { numeric: true });
+  });
+
+  // 2. Sort teams by numeric sequence
+  const activeTeams = allTeams.filter((t) => t.status !== 'disabled');
+  const sortedTeams = [...activeTeams].sort((a, b) => {
+    const numA = parseInt(a.teamId?.match(/\d+/)?.[0] || '0', 10);
+    const numB = parseInt(b.teamId?.match(/\d+/)?.[0] || '0', 10);
+    if (numA !== numB) return numA - numB;
+    return (a.teamId || '').localeCompare(b.teamId || '', undefined, { numeric: true });
+  });
+
+  const statementToTeam = new Map<string, string>();
+  const teamToStatement = new Map<string, string>();
+
+  // Phase A: Register and preserve valid existing assignments
+  sortedTeams.forEach((t) => {
+    const assignedId = t.assignedStatementId || (t as any).problemStatementId || (t as any).assignedProblemId;
+    if (assignedId && sortedStatements.some((s) => s.statementId === assignedId)) {
+      teamToStatement.set(t.teamId, assignedId);
+      statementToTeam.set(assignedId, t.teamId);
+    }
+  });
+
+  sortedStatements.forEach((s) => {
+    if (s.assignedTeamId && sortedTeams.some((t) => t.teamId === s.assignedTeamId)) {
+      statementToTeam.set(s.statementId, s.assignedTeamId);
+      teamToStatement.set(s.assignedTeamId, s.statementId);
+    }
+  });
+
+  const preservedCount = teamToStatement.size;
+
+  // Phase B: Order-wise assignment for unassigned teams
+  const unassignedTeams = sortedTeams.filter((t) => !teamToStatement.has(t.teamId));
+  let newlyAssignedCount = 0;
+
+  for (const team of unassignedTeams) {
+    const freeStatement = sortedStatements.find((s) => !statementToTeam.has(s.statementId));
+    if (freeStatement) {
+      statementToTeam.set(freeStatement.statementId, team.teamId);
+      teamToStatement.set(team.teamId, freeStatement.statementId);
+      newlyAssignedCount++;
+    }
+  }
+
+  // Phase C: Write operations in safe Firestore batches (<= 150 ops per batch)
+  const now = new Date().toISOString();
+  const writeOps: Array<{ type: 'set' | 'update'; ref: any; data: any }> = [];
+
+  for (const team of sortedTeams) {
+    const psId = teamToStatement.get(team.teamId);
+    if (!psId) continue;
+
+    const statement = sortedStatements.find((s) => s.statementId === psId);
+    if (!statement) continue;
+
+    const seq = statement.order !== undefined && statement.order !== null ? statement.order : (statement.sequence || 1);
+    const title = statement.title || `Problem Statement #${seq}`;
+    const isPublished = statement.status === 'PUBLISHED' || statement.status === 'published' || statement.status === 'active';
+
+    writeOps.push({
+      type: 'set',
+      ref: doc(db, 'teamProblemAssignments', team.teamId),
+      data: {
+        teamId: team.teamId,
+        statementId: statement.statementId,
+        problemStatementId: statement.problemStatementId || statement.statementId,
+        problemSequence: seq,
+        order: seq,
+        statementTitle: title,
+        description: statement.description || '',
+        category: statement.category || 'General',
+        difficulty: statement.difficulty || 'MEDIUM',
+        team: team.teamName || team.teamId,
+        assignedAt: (team as any).assignedAt || now,
+        assignedBy: adminUser?.email || adminUser?.uid || 'admin',
+        assignmentSource: 'AUTOMATIC_ORDER_WISE',
+        status: isPublished ? 'PUBLISHED' : 'DRAFT',
+        publishedAt: isPublished ? (statement.publishedAt || now) : null,
+      },
+    });
+
+    writeOps.push({
+      type: 'update',
+      ref: doc(db, 'teams', team.teamId),
+      data: {
+        assignedStatementId: statement.statementId,
+        assignedStatementTitle: title,
+        assignedProblemId: statement.statementId,
+        assignedProblemCode: statement.statementId,
+        assignedProblemOrder: seq,
+        assignedProblemSequence: seq,
+        assignmentStatus: 'ASSIGNED',
+        assignmentLocked: false,
+        assignmentSource: 'AUTOMATIC_ORDER_WISE',
+        assignedAt: (team as any).assignedAt || now,
+      },
+    });
+
+    writeOps.push({
+      type: 'update',
+      ref: doc(db, 'problemStatements', statement.statementId),
+      data: {
+        assignedTeamId: team.teamId,
+        assignedTeamName: team.teamName || team.teamId,
+        assignedTeamIds: [team.teamId],
+        assignmentSource: 'AUTOMATIC_ORDER_WISE',
+      },
+    });
+  }
+
+  const CHUNK_SIZE = 150;
+  for (let i = 0; i < writeOps.length; i += CHUNK_SIZE) {
+    const chunk = writeOps.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
+    for (const op of chunk) {
+      if (op.type === 'set') {
+        batch.set(op.ref, op.data, { merge: true });
+      } else if (op.type === 'update') {
+        batch.update(op.ref, op.data);
+      }
+    }
+    await batch.commit();
+  }
+
+  return {
+    success: true,
+    totalTeams: sortedTeams.length,
+    assignedCount: teamToStatement.size,
+    preservedCount,
+    unassignedTeamsCount: Math.max(0, sortedTeams.length - teamToStatement.size),
+    message: `Persisted ${teamToStatement.size} order-wise assignments (${preservedCount} preserved, ${newlyAssignedCount} newly assigned).`,
+  };
+}
+
+/**
+ * Publishes individual problem statement announcements for each assigned team.
+ * Each team receives ONLY its specific assigned problem statement in /teamAnnouncements/{teamId}.
+ */
+export async function publishProblemAnnouncement(
+  adminUser?: { uid?: string; email?: string | null }
+): Promise<{ success: boolean; announcedCount: number; message: string }> {
+  const [assignsSnap, teamsSnap] = await Promise.all([
+    getDocs(collection(db, 'teamProblemAssignments')),
+    getDocs(collection(db, 'teams')),
+  ]);
+
+  const teamMap = new Map<string, Team>();
+  teamsSnap.forEach((d) => teamMap.set(d.id, { teamId: d.id, ...d.data() } as Team));
+
+  const adminEmail = adminUser?.email || adminUser?.uid || 'admin';
+  const now = serverTimestamp();
+  const writeOps: Array<{ ref: any; data: any }> = [];
+
+  let count = 0;
+  assignsSnap.forEach((d) => {
+    const a = d.data();
+    if (a.teamId && a.statementId) {
+      count++;
+      const teamObj = teamMap.get(a.teamId);
+      const teamName = teamObj?.teamName || a.team || a.teamId;
+      const annRef = doc(db, 'teamAnnouncements', a.teamId);
+
+      writeOps.push({
+        ref: annRef,
+        data: {
+          teamId: a.teamId,
+          teamName,
+          statementId: a.statementId,
+          statementTitle: a.statementTitle || a.statementId,
+          description: a.description || '',
+          category: a.category || 'General',
+          difficulty: a.difficulty || 'MEDIUM',
+          announcementText: `You have been assigned Problem Statement ${a.statementId}: "${a.statementTitle || a.statementId}".`,
+          announcedAt: now,
+          announcedBy: adminEmail,
+          isPublished: true,
+          status: 'PUBLISHED',
+          isRead: false,
+          updatedAt: now,
+        },
+      });
+    }
+  });
+
+  const CHUNK_SIZE = 150;
+  for (let i = 0; i < writeOps.length; i += CHUNK_SIZE) {
+    const chunk = writeOps.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
+    for (const op of chunk) {
+      batch.set(op.ref, op.data, { merge: true });
+    }
+    await batch.commit();
+  }
+
+  // Update /settings/problemAnnouncement
+  await setDoc(
+    doc(db, 'settings', 'problemAnnouncement'),
+    {
+      isPublished: true,
+      publishedAt: now,
+      publishedBy: adminEmail,
+      totalTeamsAnnounced: count,
+      updatedAt: now,
+    },
+    { merge: true }
+  );
+
+  // Audit log
+  const auditDocRef = doc(collection(db, 'auditLogs'));
+  await setDoc(auditDocRef, {
+    id: auditDocRef.id,
+    adminUid: adminUser?.uid || 'admin',
+    adminEmail,
+    action: 'Problem Statement Announcement Published',
+    targetType: 'problem',
+    targetId: 'announcement',
+    timestamp: new Date().toISOString(),
+    metadata: { totalTeamsAnnounced: count },
+  }).catch(() => {});
+
+  return {
+    success: true,
+    announcedCount: count,
+    message: `Successfully announced assigned problem statements to ${count} teams!`,
+  };
+}
+
+/**
+ * Subscribes to a Team's Problem Statement Announcement
+ */
+export function subscribeToTeamProblemAnnouncement(
+  teamId: string,
+  callback: (announcement: any | null) => void
+): () => void {
+  const docRef = doc(db, 'teamAnnouncements', teamId);
+  return onSnapshot(
+    docRef,
+    (snap) => {
+      if (snap.exists()) {
+        callback(snap.data());
+      } else {
+        callback(null);
+      }
+    },
+    (err) => {
+      console.warn('[ProblemAssignment] subscribeToTeamProblemAnnouncement error:', err);
+      callback(null);
+    }
+  );
+}
+
+/**
+ * Subscribes to global problem announcement setting in Firestore
+ */
+export function subscribeToProblemAnnouncementSetting(
+  callback: (setting: any | null) => void
+): () => void {
+  const docRef = doc(db, 'settings', 'problemAnnouncement');
+  return onSnapshot(
+    docRef,
+    (snap) => {
+      if (snap.exists()) {
+        callback(snap.data());
+      } else {
+        callback(null);
+      }
+    },
+    (err) => {
+      console.warn('[ProblemAssignment] subscribeToProblemAnnouncementSetting error:', err);
+      callback(null);
+    }
+  );
 }
 
 /**

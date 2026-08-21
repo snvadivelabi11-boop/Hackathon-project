@@ -60,6 +60,7 @@ import {
   FileSearchOutlined,
   SwapOutlined,
   ThunderboltOutlined,
+  SoundOutlined,
 } from '@ant-design/icons';
 import {
   subscribeToProblemStatements,
@@ -80,6 +81,8 @@ import {
   deleteProblemStatementCascade,
   subscribeToImports,
   checkPreviousImport,
+  persistOrderWiseAssignments,
+  publishProblemAnnouncement,
   DEFAULT_ASSIGNMENT_CONFIG,
 } from '../../services/problemAssignment.service';
 import {
@@ -175,6 +178,15 @@ export const ProblemStatementsPage: React.FC = () => {
       unsubVer();
     };
   }, []);
+
+  useEffect(() => {
+    const unassignedCount = teams.filter((t) => t.status !== 'disabled' && !t.assignedStatementId).length;
+    if (unassignedCount > 0 && statements.length > 0) {
+      persistOrderWiseAssignments({ uid: user?.uid, email: user?.email }).catch((e) => {
+        console.warn('[ProblemStatementsPage] Auto-sync notice:', e);
+      });
+    }
+  }, [teams, statements, user]);
 
   const draftStatements = useMemo(() => {
     return statements.filter((p) => p.status === 'draft' || p.status === 'DRAFT' || (!p.publishedAt && p.status !== 'published' && p.status !== 'PUBLISHED' && p.status !== 'active'));
@@ -532,6 +544,35 @@ export const ProblemStatementsPage: React.FC = () => {
     });
   };
 
+  // Problem Statement Announcement Action
+  const handleConfirmAnnouncementWorkflow = () => {
+    Modal.confirm({
+      title: 'Broadcast Problem Statement Announcement?',
+      icon: <SoundOutlined style={{ color: '#7c3aed' }} />,
+      content: (
+        <div>
+          <Paragraph>
+            This will broadcast official Problem Statement announcements to all <Text strong>{validationResult.assignedTeamsCount} Assigned Teams</Text>.
+          </Paragraph>
+          <Paragraph>
+            Each team will receive a customized announcement containing <Text strong>ONLY its specific assigned Problem Statement</Text>.
+          </Paragraph>
+        </div>
+      ),
+      okText: 'Send Announcement',
+      okType: 'primary',
+      cancelText: 'Cancel',
+      onOk: async () => {
+        try {
+          const res = await publishProblemAnnouncement({ uid: user?.uid, email: user?.email });
+          message.success(res.message);
+        } catch (err: any) {
+          message.error(err.message || 'Failed to publish announcement.');
+        }
+      },
+    });
+  };
+
   // Unpublish Confirmation
   const handleUnpublishWorkflow = () => {
     Modal.confirm({
@@ -841,6 +882,15 @@ export const ProblemStatementsPage: React.FC = () => {
             PUBLISH ASSIGNMENT
           </Button>
 
+          <Button
+            type="primary"
+            icon={<SoundOutlined />}
+            onClick={handleConfirmAnnouncementWorkflow}
+            style={{ borderRadius: 8, background: '#7c3aed', borderColor: '#7c3aed', fontWeight: 700 }}
+          >
+            ANNOUNCEMENT
+          </Button>
+
           {activePubVersion?.activePublicationId && (
             <Button
               danger
@@ -1083,6 +1133,15 @@ export const ProblemStatementsPage: React.FC = () => {
                         style={{ background: '#059669', borderColor: '#059669', fontWeight: 700 }}
                       >
                         PUBLISH ASSIGNMENT
+                      </Button>
+
+                      <Button
+                        type="primary"
+                        icon={<SoundOutlined />}
+                        onClick={handleConfirmAnnouncementWorkflow}
+                        style={{ background: '#7c3aed', borderColor: '#7c3aed', fontWeight: 700 }}
+                      >
+                        ANNOUNCEMENT
                       </Button>
                     </Space>
                   </div>

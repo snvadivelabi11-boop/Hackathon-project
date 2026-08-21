@@ -24,6 +24,7 @@ import {
   ArrowRightOutlined,
   FileTextOutlined,
   UserOutlined,
+  SoundOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
@@ -34,6 +35,7 @@ import { subscribeToTeamScores } from '../../services/scores.service';
 import { subscribeToTeamSelection } from '../../services/selection.service';
 import { subscribeToTeamMembers } from '../../services/certificates.service';
 import { subscribeToTeamAssignment } from '../../services/problems.service';
+import { subscribeToTeamProblemAnnouncement } from '../../services/problemAssignment.service';
 import {
   subscribeToTimingConfig,
   calculateRoundTimingEvaluation,
@@ -57,6 +59,7 @@ export const TeamDashboard: React.FC = () => {
   const [selection, setSelection] = useState<TeamSelection | null>(null);
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [assignment, setAssignment] = useState<TeamProblemAssignment | null>(null);
+  const [problemAnnouncement, setProblemAnnouncement] = useState<any | null>(null);
 
   useEffect(() => {
     const unsubRounds = subscribeToRounds(setRounds);
@@ -66,6 +69,7 @@ export const TeamDashboard: React.FC = () => {
     const unsubSel = subscribeToTeamSelection(teamId, setSelection);
     const unsubMems = subscribeToTeamMembers(teamId, setMembers);
     const unsubAssign = subscribeToTeamAssignment(teamId, setAssignment);
+    const unsubAnnounce = subscribeToTeamProblemAnnouncement(teamId, setProblemAnnouncement);
 
     return () => {
       unsubRounds();
@@ -75,6 +79,7 @@ export const TeamDashboard: React.FC = () => {
       unsubSel();
       unsubMems();
       unsubAssign();
+      unsubAnnounce();
     };
   }, [teamId]);
 
@@ -135,6 +140,44 @@ export const TeamDashboard: React.FC = () => {
           </Space>
         </div>
       </div>
+
+      {/* Official Problem Statement Announcement Banner */}
+      {problemAnnouncement && problemAnnouncement.isPublished && (
+        <Alert
+          message={
+            <Space>
+              <SoundOutlined style={{ color: '#7c3aed', fontSize: '18px' }} />
+              <span style={{ fontWeight: 800, fontSize: '15px', color: '#5b21b6' }}>
+                Official Problem Statement Assignment Announcement
+              </span>
+            </Space>
+          }
+          description={
+            <div style={{ marginTop: 6, fontSize: '14px', color: '#334155' }}>
+              <div>{problemAnnouncement.announcementText}</div>
+              <div style={{ marginTop: 8 }}>
+                <Button
+                  type="primary"
+                  size="small"
+                  onClick={() => navigate('/team/problem-statement')}
+                  style={{ background: '#7c3aed', borderColor: '#7c3aed', fontWeight: 600, borderRadius: 6 }}
+                >
+                  View My Problem Statement
+                </Button>
+              </div>
+            </div>
+          }
+          type="info"
+          showIcon={false}
+          style={{
+            marginBottom: 24,
+            borderRadius: 12,
+            border: '1px solid #ddd6fe',
+            background: 'linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%)',
+            padding: '16px 20px',
+          }}
+        />
+      )}
 
       {/* Assigned Problem Statement Card (Visible ONLY when PUBLISHED) */}
       {assignment && assignment.status === 'PUBLISHED' && (
