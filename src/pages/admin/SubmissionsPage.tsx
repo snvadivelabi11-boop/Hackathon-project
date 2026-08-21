@@ -34,6 +34,8 @@ import {
   ClockCircleOutlined,
   LinkOutlined,
   EditOutlined,
+  LeftOutlined,
+  RightOutlined,
 } from '@ant-design/icons';
 import {
   subscribeToAllSubmissions,
@@ -43,7 +45,7 @@ import {
 import { subscribeToAllScores, submitEvaluation } from '../../services/scores.service';
 import { subscribeToRounds } from '../../services/rounds.service';
 import { subscribeToTeams } from '../../services/accounts.service';
-import { Submission, Score, Round, Team } from '../../types';
+import { Submission, SubmissionFile, Score, Round, Team } from '../../types';
 import { formatISTDateTime } from '../../utils/date';
 import { useAuth } from '../../contexts/AuthContext';
 import { useScoring } from '../../contexts/ScoringContext';
@@ -71,10 +73,18 @@ export const SubmissionsPage: React.FC = () => {
   const [gradingRoundId, setGradingRoundId] = useState<string>('round1');
   const [isEvalDrawerOpen, setIsEvalDrawerOpen] = useState(false);
   const [savingScore, setSavingScore] = useState(false);
-  const [previewImageModalOpen, setPreviewImageModalOpen] = useState(false);
-  const [previewImageUrl, setPreviewImageUrl] = useState<string>('');
+  const [previewGalleryFiles, setPreviewGalleryFiles] = useState<SubmissionFile[]>([]);
+  const [previewGalleryIndex, setPreviewGalleryIndex] = useState<number>(0);
+  const [previewGalleryOpen, setPreviewGalleryOpen] = useState<boolean>(false);
   const [evalForm] = Form.useForm();
   const { user } = useAuth();
+
+  const openGalleryModal = (files: SubmissionFile[], initialIndex: number = 0) => {
+    if (!files || files.length === 0) return;
+    setPreviewGalleryFiles(files);
+    setPreviewGalleryIndex(Math.max(0, Math.min(initialIndex, files.length - 1)));
+    setPreviewGalleryOpen(true);
+  };
 
   useEffect(() => {
     const unsubSubs = subscribeToAllSubmissions(setSubmissions);
@@ -241,16 +251,13 @@ export const SubmissionsPage: React.FC = () => {
                       type="link"
                       size="small"
                       style={{ padding: 0, fontWeight: 600 }}
-                      onClick={() => {
-                        setPreviewImageUrl(viewUrl);
-                        setPreviewImageModalOpen(true);
-                      }}
+                      onClick={() => openGalleryModal(filesToRender, fIdx)}
                     >
-                      {filesToRender.length > 1 ? `Image ${fIdx + 1}: ` : ''}{safeString(file.fileName) || `Image ${fIdx + 1}`}
+                      {filesToRender.length > 1 ? `Image ${file.slot || fIdx + 1}: ` : ''}{safeString(file.fileName) || `Image ${file.slot || fIdx + 1}`}
                     </Button>
                   ) : (
                     <Text strong style={{ fontSize: '12px' }}>
-                      {filesToRender.length > 1 ? `File ${fIdx + 1}: ` : ''}{safeString(file.fileName) || `File ${fIdx + 1}`}
+                      {filesToRender.length > 1 ? `File ${file.slot || fIdx + 1}: ` : ''}{safeString(file.fileName) || `File ${file.slot || fIdx + 1}`}
                     </Text>
                   )}
                   <a
@@ -532,10 +539,7 @@ export const SubmissionsPage: React.FC = () => {
                                                 cursor: 'pointer',
                                                 marginBottom: 6,
                                               }}
-                                              onClick={() => {
-                                                setPreviewImageUrl(getSubmissionViewUrl(file));
-                                                setPreviewImageModalOpen(true);
-                                              }}
+                                              onClick={() => openGalleryModal(r1Files, fIdx)}
                                             >
                                               <img
                                                 src={getSubmissionViewUrl(file)}
@@ -544,16 +548,14 @@ export const SubmissionsPage: React.FC = () => {
                                               />
                                             </div>
                                             <Text strong ellipsis style={{ display: 'block', fontSize: '11px', marginBottom: 4 }} title={file.fileName}>
-                                              {file.fileName || `Image ${fIdx + 1}`}
+                                              {file.fileName || `Image ${file.slot || fIdx + 1}`}
                                             </Text>
                                             <Space size="small" style={{ width: '100%', justifyContent: 'space-between' }}>
                                               <Button
                                                 size="small"
                                                 type="primary"
                                                 icon={<EyeOutlined />}
-                                                href={getSubmissionViewUrl(file)}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
+                                                onClick={() => openGalleryModal(r1Files, fIdx)}
                                                 style={{ fontSize: '11px', padding: '0 6px', height: 24, background: '#1677ff' }}
                                               >
                                                 VIEW
@@ -606,10 +608,7 @@ export const SubmissionsPage: React.FC = () => {
                                         justifyContent: 'center',
                                         cursor: 'pointer',
                                       }}
-                                      onClick={() => {
-                                        setPreviewImageUrl(getSubmissionViewUrl(singleFile));
-                                        setPreviewImageModalOpen(true);
-                                      }}
+                                      onClick={() => openGalleryModal(r1Files, 0)}
                                     >
                                       <img
                                         src={getSubmissionViewUrl(singleFile)}
@@ -624,9 +623,7 @@ export const SubmissionsPage: React.FC = () => {
                                       size="small"
                                       type="primary"
                                       icon={<EyeOutlined />}
-                                      href={getSubmissionViewUrl(singleFile)}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
+                                      onClick={() => openGalleryModal(r1Files, 0)}
                                       style={{ background: '#1677ff' }}
                                     >
                                       VIEW FILE
@@ -951,14 +948,152 @@ export const SubmissionsPage: React.FC = () => {
         </Form>
       </Drawer>
 
-      {/* Image Preview Modal */}
+      {/* Enhanced Multi-Image Gallery Modal */}
       <Modal
-        open={previewImageModalOpen}
+        open={previewGalleryOpen}
         footer={null}
-        onCancel={() => setPreviewImageModalOpen(false)}
-        width={800}
+        onCancel={() => setPreviewGalleryOpen(false)}
+        width={900}
+        centered
+        title={
+          previewGalleryFiles.length > 0 ? (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingRight: 32 }}>
+              <Space>
+                <Tag color="cyan" style={{ fontWeight: 700 }}>
+                  Image {previewGalleryFiles[previewGalleryIndex]?.slot || previewGalleryIndex + 1} of {previewGalleryFiles.length}
+                </Tag>
+                <Text strong ellipsis style={{ maxWidth: 380 }}>
+                  {previewGalleryFiles[previewGalleryIndex]?.fileName || `Image ${previewGalleryIndex + 1}`}
+                </Text>
+              </Space>
+              <Space>
+                <Button
+                  size="small"
+                  type="primary"
+                  icon={<EyeOutlined />}
+                  href={getSubmissionViewUrl(previewGalleryFiles[previewGalleryIndex])}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ background: '#1677ff' }}
+                >
+                  Open Full File
+                </Button>
+                <Button
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  href={getSubmissionDownloadUrl(previewGalleryFiles[previewGalleryIndex])}
+                  target="_blank"
+                  download={previewGalleryFiles[previewGalleryIndex]?.fileName || true}
+                >
+                  Download
+                </Button>
+              </Space>
+            </div>
+          ) : 'Image Gallery Preview'
+        }
       >
-        <Image src={previewImageUrl} alt="Preview" style={{ width: '100%' }} />
+        {previewGalleryFiles.length > 0 && (
+          <div>
+            <div
+              style={{
+                position: 'relative',
+                background: '#090d16',
+                borderRadius: 8,
+                overflow: 'hidden',
+                minHeight: 380,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 16,
+              }}
+            >
+              {previewGalleryFiles.length > 1 && (
+                <Button
+                  shape="circle"
+                  icon={<LeftOutlined />}
+                  disabled={previewGalleryIndex === 0}
+                  onClick={() => setPreviewGalleryIndex((prev) => Math.max(0, prev - 1))}
+                  style={{
+                    position: 'absolute',
+                    left: 16,
+                    zIndex: 10,
+                    opacity: previewGalleryIndex === 0 ? 0.3 : 0.85,
+                  }}
+                />
+              )}
+
+              <img
+                src={getSubmissionViewUrl(previewGalleryFiles[previewGalleryIndex])}
+                alt={previewGalleryFiles[previewGalleryIndex]?.fileName || 'Preview'}
+                style={{
+                  maxHeight: '60vh',
+                  maxWidth: '100%',
+                  objectFit: 'contain',
+                  borderRadius: 4,
+                }}
+              />
+
+              {previewGalleryFiles.length > 1 && (
+                <Button
+                  shape="circle"
+                  icon={<RightOutlined />}
+                  disabled={previewGalleryIndex === previewGalleryFiles.length - 1}
+                  onClick={() => setPreviewGalleryIndex((prev) => Math.min(previewGalleryFiles.length - 1, prev + 1))}
+                  style={{
+                    position: 'absolute',
+                    right: 16,
+                    zIndex: 10,
+                    opacity: previewGalleryIndex === previewGalleryFiles.length - 1 ? 0.3 : 0.85,
+                  }}
+                />
+              )}
+            </div>
+
+            {/* Thumbnail Navigation Strip */}
+            {previewGalleryFiles.length > 1 && (
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 10,
+                  marginTop: 14,
+                  justifyContent: 'center',
+                  overflowX: 'auto',
+                  padding: '4px 0',
+                }}
+              >
+                {previewGalleryFiles.map((f, idx) => {
+                  const isActive = idx === previewGalleryIndex;
+                  return (
+                    <div
+                      key={idx}
+                      onClick={() => setPreviewGalleryIndex(idx)}
+                      style={{
+                        border: isActive ? '2px solid #1677ff' : '2px solid transparent',
+                        borderRadius: 6,
+                        overflow: 'hidden',
+                        cursor: 'pointer',
+                        background: '#000',
+                        width: 70,
+                        height: 50,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        opacity: isActive ? 1 : 0.6,
+                        transition: 'all 0.2s ease',
+                      }}
+                    >
+                      <img
+                        src={getSubmissionViewUrl(f)}
+                        alt={`Thumb ${idx + 1}`}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </Modal>
     </div>
   );
