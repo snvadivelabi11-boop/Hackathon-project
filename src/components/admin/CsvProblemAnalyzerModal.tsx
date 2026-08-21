@@ -86,7 +86,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
 
   // AI Review State
   const [aiReviewing, setAiReviewing] = useState<boolean>(false);
-  const [aiStatus, setAiStatus] = useState<'Processing' | 'Completed' | 'Failed' | 'Idle'>('Idle');
+  const [aiStatus, setAiStatus] = useState<'Processing' | 'Completed' | 'Partial' | 'Failed' | 'Idle'>('Idle');
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiProgress, setAiProgress] = useState<number>(0);
   const [aiProgressText, setAiProgressText] = useState<string>('Preparing dataset for Claude AI analysis...');
@@ -202,26 +202,34 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
         if (aiResponse && aiResponse.problems) {
           const enrichedQuestions = mergeAiAnalysisIntoQuestions(localResult.questions, aiResponse);
           const enrichedValid = mergeAiAnalysisIntoQuestions(localResult.validItemsToSave, aiResponse);
+          const realAiCount = aiResponse.aiAnalyzedCount !== undefined
+            ? aiResponse.aiAnalyzedCount
+            : (aiResponse.aiSuccess ? aiResponse.totalProblems : 0);
 
           setAnalysisResult({
             ...localResult,
             questions: enrichedQuestions,
             validItemsToSave: enrichedValid,
             aiAnalysisPerformed: true,
-            aiAnalysisSuccess: Boolean(aiResponse.aiSuccess),
+            aiAnalysisSuccess: Boolean(aiResponse.aiSuccess && realAiCount === localResult.summary.validQuestions),
             aiAnalysisError: aiResponse.aiError,
+            aiErrorCode: aiResponse.errorCode,
             aiModelUsed: aiResponse.aiModelUsed,
             summary: {
               ...localResult.summary,
-              aiAnalyzedCount: aiResponse.aiSuccess ? aiResponse.totalProblems : 0,
+              aiAnalyzedCount: realAiCount,
             },
           });
 
-          setAiStatus(aiResponse.aiSuccess ? 'Completed' : 'Failed');
-          if (aiResponse.aiSuccess) {
-            message.success(`AI Analysis Completed: ${aiResponse.totalProblems} problem statements reviewed by ${aiResponse.aiModelUsed || 'AI'}.`);
+          if (realAiCount === localResult.summary.validQuestions && realAiCount > 0) {
+            setAiStatus('Completed');
+            message.success(`AI Analysis Completed: ${realAiCount} problem statements analyzed by ${aiResponse.aiModelUsed || 'AI'}.`);
+          } else if (realAiCount > 0) {
+            setAiStatus('Partial');
+            message.info(`AI Analysis Partial: ${realAiCount} / ${localResult.summary.validQuestions} problem statements analyzed by AI.`);
           } else {
-            message.warning(`AI unavailable — local validation used (${aiResponse.aiError || 'OpenRouter credits/connection issue'}).`);
+            setAiStatus('Failed');
+            message.warning(`AI unavailable — local validation used (${aiResponse.aiError || 'OpenRouter credits required'}).`);
           }
         }
       } catch (err: any) {
@@ -273,25 +281,34 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
       if (aiResponse && aiResponse.problems) {
         const enrichedQuestions = mergeAiAnalysisIntoQuestions(analysisResult.questions, aiResponse);
         const enrichedValid = mergeAiAnalysisIntoQuestions(analysisResult.validItemsToSave, aiResponse);
+        const realAiCount = aiResponse.aiAnalyzedCount !== undefined
+          ? aiResponse.aiAnalyzedCount
+          : (aiResponse.aiSuccess ? aiResponse.totalProblems : 0);
 
         setAnalysisResult({
           ...analysisResult,
           questions: enrichedQuestions,
           validItemsToSave: enrichedValid,
           aiAnalysisPerformed: true,
-          aiAnalysisSuccess: Boolean(aiResponse.aiSuccess),
+          aiAnalysisSuccess: Boolean(aiResponse.aiSuccess && realAiCount === analysisResult.summary.validQuestions),
           aiAnalysisError: aiResponse.aiError,
+          aiErrorCode: aiResponse.errorCode,
           aiModelUsed: aiResponse.aiModelUsed,
           summary: {
             ...analysisResult.summary,
-            aiAnalyzedCount: aiResponse.aiSuccess ? aiResponse.totalProblems : 0,
+            aiAnalyzedCount: realAiCount,
           },
         });
-        setAiStatus(aiResponse.aiSuccess ? 'Completed' : 'Failed');
-        if (aiResponse.aiSuccess) {
-          message.success(`AI Analysis Completed: ${aiResponse.totalProblems} problem statements reviewed by ${aiResponse.aiModelUsed || 'AI'}.`);
+
+        if (realAiCount === analysisResult.summary.validQuestions && realAiCount > 0) {
+          setAiStatus('Completed');
+          message.success(`AI Analysis Completed: ${realAiCount} problem statements analyzed by ${aiResponse.aiModelUsed || 'AI'}.`);
+        } else if (realAiCount > 0) {
+          setAiStatus('Partial');
+          message.info(`AI Analysis Partial: ${realAiCount} / ${analysisResult.summary.validQuestions} problem statements analyzed by AI.`);
         } else {
-          message.warning(`AI unavailable — local validation used (${aiResponse.aiError || 'OpenRouter error'}).`);
+          setAiStatus('Failed');
+          message.warning(`AI unavailable — local validation used (${aiResponse.aiError || 'OpenRouter credits required'}).`);
         }
       }
     } catch (err: any) {
@@ -722,109 +739,138 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
         )}
 
         {/* STEP 3: ADMIN REVIEW & PREVIEW */}
-        {step === 3 && analysisResult && (
-          <div>
-            {/* Status Bar */}
-            <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f8fafc', padding: '10px 16px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
-              <Space size="middle">
-                <Text strong>AI Analysis Status:</Text>
-                {aiStatus === 'Processing' && <Tag icon={<SyncOutlined spin />} color="processing">Processing</Tag>}
-                {analysisResult.aiAnalysisSuccess && (
-                  <Tag icon={<CheckCircleOutlined />} color="success">
-                    AI Analysis Completed ({analysisResult.aiModelUsed || 'AI Model'})
+        {step === 3 && analysisResult && (() => {
+          const realAiCount = analysisResult.summary.aiAnalyzedCount || 0;
+          const totalValid = analysisResult.summary.validQuestions || 0;
+          const isPartial = realAiCount > 0 && realAiCount < totalValid;
+          const isFullSuccess = realAiCount === totalValid && totalValid > 0;
+          const isInsufficientCredits = analysisResult.aiAnalysisError?.includes('402') ||
+            analysisResult.aiAnalysisError?.includes('OPENROUTER_INSUFFICIENT_CREDITS') ||
+            analysisResult.aiErrorCode === 'OPENROUTER_INSUFFICIENT_CREDITS';
+
+          return (
+            <div>
+              {/* Status Bar */}
+              <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f8fafc', padding: '10px 16px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+                <Space size="middle">
+                  <Text strong>AI Analysis Status:</Text>
+                  {aiStatus === 'Processing' && <Tag icon={<SyncOutlined spin />} color="processing">AI ANALYSIS RUNNING</Tag>}
+                  {isFullSuccess && (
+                    <Tag icon={<CheckCircleOutlined />} color="success">
+                      AI ANALYSIS COMPLETED ({analysisResult.aiModelUsed || 'AI Model'})
+                    </Tag>
+                  )}
+                  {isPartial && (
+                    <Tag icon={<WarningOutlined />} color="warning">
+                      AI ANALYSIS PARTIAL ({realAiCount} / {totalValid})
+                    </Tag>
+                  )}
+                  {!isFullSuccess && !isPartial && analysisResult.aiAnalysisPerformed && (
+                    <Tag icon={<CloseCircleOutlined />} color="error">
+                      AI ANALYSIS FAILED
+                    </Tag>
+                  )}
+                  {!analysisResult.aiAnalysisPerformed && <Tag color="default">AI ANALYSIS READY</Tag>}
+                </Space>
+
+                <Space>
+                  <Tag color="blue" style={{ fontSize: '12px' }}>
+                    Total Problems: <strong>{totalValid}</strong>
                   </Tag>
-                )}
-                {!analysisResult.aiAnalysisSuccess && analysisResult.aiAnalysisPerformed && (
-                  <Tag icon={<WarningOutlined />} color="orange">
-                    AI unavailable — local validation used
-                  </Tag>
-                )}
-                {!analysisResult.aiAnalysisPerformed && <Tag color="default">Not Run</Tag>}
-              </Space>
+                </Space>
+              </div>
 
-              <Space>
-                <Tag color="blue" style={{ fontSize: '12px' }}>
-                  Total Problems: <strong>{analysisResult.summary.validQuestions}</strong>
-                </Tag>
-              </Space>
-            </div>
+              {/* Statistics */}
+              <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+                <Col xs={12} sm={6}>
+                  <Card size="small" style={{ background: '#f0fdf4', borderColor: '#bbf7d0', borderRadius: 8 }}>
+                    <Statistic
+                      title="Valid Problems"
+                      value={totalValid}
+                      valueStyle={{ color: '#16a34a', fontWeight: 700 }}
+                    />
+                  </Card>
+                </Col>
+                <Col xs={12} sm={6}>
+                  <Card size="small" style={{ background: '#faf5ff', borderColor: '#e9d5ff', borderRadius: 8 }}>
+                    <Statistic
+                      title="AI Analyzed"
+                      value={`${realAiCount} / ${totalValid}`}
+                      valueStyle={{ color: realAiCount > 0 ? '#7c3aed' : '#94a3b8', fontWeight: 700 }}
+                      prefix={<RobotOutlined />}
+                    />
+                  </Card>
+                </Col>
+                <Col xs={12} sm={6}>
+                  <Card size="small" style={{ background: '#eff6ff', borderColor: '#bfdbfe', borderRadius: 8 }}>
+                    <Statistic
+                      title="Local Validation"
+                      value={totalValid - realAiCount}
+                      valueStyle={{ color: totalValid - realAiCount > 0 ? '#2563eb' : '#94a3b8', fontWeight: 700 }}
+                    />
+                  </Card>
+                </Col>
+                <Col xs={12} sm={6}>
+                  <Card size="small" style={{ background: '#fffbeb', borderColor: '#fde68a', borderRadius: 8 }}>
+                    <Statistic
+                      title="Issues / Duplicates"
+                      value={analysisResult.summary.invalidRows}
+                      valueStyle={{ color: '#d97706', fontWeight: 700 }}
+                    />
+                  </Card>
+                </Col>
+              </Row>
 
-            {/* Statistics */}
-            <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-              <Col xs={12} sm={6}>
-                <Card size="small" style={{ background: '#f0fdf4', borderColor: '#bbf7d0', borderRadius: 8 }}>
-                  <Statistic
-                    title="Valid Problems"
-                    value={analysisResult.summary.validQuestions}
-                    valueStyle={{ color: '#16a34a', fontWeight: 700 }}
-                  />
-                </Card>
-              </Col>
-              <Col xs={12} sm={6}>
-                <Card size="small" style={{ background: '#faf5ff', borderColor: '#e9d5ff', borderRadius: 8 }}>
-                  <Statistic
-                    title="AI Analyzed"
-                    value={analysisResult.aiAnalysisSuccess ? analysisResult.summary.aiAnalyzedCount || analysisResult.summary.validQuestions : 0}
-                    valueStyle={{ color: analysisResult.aiAnalysisSuccess ? '#7c3aed' : '#94a3b8', fontWeight: 700 }}
-                    prefix={<RobotOutlined />}
-                  />
-                </Card>
-              </Col>
-              <Col xs={12} sm={6}>
-                <Card size="small" style={{ background: '#eff6ff', borderColor: '#bfdbfe', borderRadius: 8 }}>
-                  <Statistic
-                    title="Local Validation"
-                    value={analysisResult.aiAnalysisSuccess ? 0 : analysisResult.summary.validQuestions}
-                    valueStyle={{ color: analysisResult.aiAnalysisSuccess ? '#94a3b8' : '#2563eb', fontWeight: 700 }}
-                  />
-                </Card>
-              </Col>
-              <Col xs={12} sm={6}>
-                <Card size="small" style={{ background: '#fffbeb', borderColor: '#fde68a', borderRadius: 8 }}>
-                  <Statistic
-                    title="Issues / Duplicates"
-                    value={analysisResult.summary.invalidRows}
-                    valueStyle={{ color: '#d97706', fontWeight: 700 }}
-                  />
-                </Card>
-              </Col>
-            </Row>
+              {isFullSuccess && (
+                <Alert
+                  message={
+                    <Space>
+                      <RobotOutlined style={{ color: '#7c3aed' }} />
+                      <span style={{ fontWeight: 700 }}>AI Problem Analysis Completed:</span>
+                      <span>
+                        All {realAiCount} problem statements analyzed and ordered with {analysisResult.aiModelUsed || 'AI'}. Ready to save as DRAFT.
+                      </span>
+                    </Space>
+                  }
+                  type="success"
+                  showIcon={false}
+                  style={{ marginBottom: 16, borderRadius: 8, background: '#f5f3ff', border: '1px solid #ddd6fe' }}
+                />
+              )}
 
-            {analysisResult.aiAnalysisSuccess && (
-              <Alert
-                message={
-                  <Space>
-                    <RobotOutlined style={{ color: '#7c3aed' }} />
-                    <span style={{ fontWeight: 700 }}>AI Problem Analysis Completed:</span>
-                    <span>
-                      {analysisResult.validItemsToSave.length} problem statements analyzed and ordered with {analysisResult.aiModelUsed || 'AI'}. Ready to save as DRAFT.
-                    </span>
-                  </Space>
-                }
-                type="success"
-                showIcon={false}
-                style={{ marginBottom: 16, borderRadius: 8, background: '#f5f3ff', border: '1px solid #ddd6fe' }}
-              />
-            )}
+              {isPartial && (
+                <Alert
+                  message={`AI Analysis Partial (${realAiCount} / ${totalValid} Analyzed)`}
+                  description={`Successfully analyzed ${realAiCount} problem statements with Claude AI. Remaining ${totalValid - realAiCount} statements were validated locally due to credit limits. You can add credits and retry.`}
+                  type="warning"
+                  showIcon
+                  action={
+                    <Button size="small" icon={<ReloadOutlined />} onClick={handleRetryAi}>
+                      Retry AI
+                    </Button>
+                  }
+                  style={{ marginBottom: 16, borderRadius: 8 }}
+                />
+              )}
 
-            {analysisResult.aiAnalysisPerformed && !analysisResult.aiAnalysisSuccess && (
-              <Alert
-                message="AI unavailable — local validation used"
-                description={
-                  analysisResult.aiAnalysisError?.includes('402') || analysisResult.aiAnalysisError?.includes('OPENROUTER_INSUFFICIENT_CREDITS')
-                    ? `OpenRouter account credits required: The configured OpenRouter model requires available credits. Deterministic local validation was applied and preserved all ${analysisResult.summary.validQuestions} problem statements with zero data loss.`
-                    : `OpenRouter AI service error (${analysisResult.aiAnalysisError || 'Service unavailable'}). Deterministic local validation was applied and preserved all ${analysisResult.summary.validQuestions} problem statements with zero data loss.`
-                }
-                type="warning"
-                showIcon
-                action={
-                  <Button size="small" icon={<ReloadOutlined />} onClick={handleRetryAi}>
-                    Retry AI
-                  </Button>
-                }
-                style={{ marginBottom: 16, borderRadius: 8 }}
-              />
-            )}
+              {analysisResult.aiAnalysisPerformed && !isFullSuccess && !isPartial && (
+                <Alert
+                  message={isInsufficientCredits ? 'OpenRouter AI Analysis Unavailable — Insufficient Credits' : 'AI Analysis Unavailable — Local Validation Used'}
+                  description={
+                    isInsufficientCredits
+                      ? `OpenRouter AI analysis is unavailable because the configured OpenRouter account has insufficient credits. Deterministic local validation was applied and preserved all ${totalValid} problem statements with zero data loss. Please add credits at https://openrouter.ai/settings/credits and click "Retry AI".`
+                      : `OpenRouter AI service error (${analysisResult.aiAnalysisError || 'Service unavailable'}). Deterministic local validation was applied and preserved all ${totalValid} problem statements with zero data loss.`
+                  }
+                  type="warning"
+                  showIcon
+                  action={
+                    <Button size="small" icon={<ReloadOutlined />} onClick={handleRetryAi}>
+                      Retry AI
+                    </Button>
+                  }
+                  style={{ marginBottom: 16, borderRadius: 8 }}
+                />
+              )}
 
             <Tabs
               activeKey={activeTab}
@@ -885,7 +931,8 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
               </Space>
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* STEP 4: READY FOR DISTRIBUTION */}
         {step === 4 && (

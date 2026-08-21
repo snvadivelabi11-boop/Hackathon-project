@@ -64,14 +64,18 @@ export interface AnalyzedProblemOutputItem {
   issues: string[];
   suggestions: string[];
   difficulty: 'EASY' | 'MEDIUM' | 'HARD';
+  aiAnalyzed?: boolean;
+  aiModelUsed?: string | null;
 }
 
 export interface CsvAiAnalysisResponse {
   success: boolean;
   totalProblems: number;
+  aiAnalyzedCount?: number;
   aiModelUsed: string;
   aiSuccess: boolean;
   aiError?: string | null;
+  errorCode?: string | null;
   problems: AnalyzedProblemOutputItem[];
 }
 
@@ -94,6 +98,7 @@ export interface CsvAnalysisResult {
   aiAnalysisPerformed?: boolean;
   aiAnalysisSuccess?: boolean;
   aiAnalysisError?: string | null;
+  aiErrorCode?: string | null;
   aiModelUsed?: string;
 }
 
@@ -722,16 +727,27 @@ export function analyzeCsvProblemStatements(
 /**
  * Helper to generate structured fallback results if worker is temporarily unreachable
  */
+/**
+ * Helper to generate structured fallback results if worker is temporarily unreachable
+ */
 export function generateClientFallbackResponse(
   validQuestions: AnalyzedQuestionItem[],
-  customError?: string
+  customError?: string,
+  errorCode?: string | null
 ): CsvAiAnalysisResponse {
+  const isCreditError = customError?.includes('402') || customError?.includes('Insufficient credits') || errorCode === 'OPENROUTER_INSUFFICIENT_CREDITS';
+  const resolvedCode = errorCode || (isCreditError ? 'OPENROUTER_INSUFFICIENT_CREDITS' : null);
+
   return {
     success: true,
     totalProblems: validQuestions.length,
-    aiModelUsed: '~anthropic/claude-sonnet-latest (Local Fallback)',
+    aiAnalyzedCount: 0,
+    aiModelUsed: '~anthropic/claude-sonnet-latest',
     aiSuccess: false,
-    aiError: customError || 'Cloudflare Worker backend offline or unreachable',
+    errorCode: resolvedCode,
+    aiError: customError || (isCreditError
+      ? 'OpenRouter AI analysis is unavailable because the configured OpenRouter account has insufficient credits.'
+      : 'Cloudflare Worker backend offline or unreachable. Deterministic local validation applied.'),
     problems: validQuestions.map((item, idx) => {
       const seq = item.sequence ?? idx + 1;
       const docId = item.problemStatementId || `PS${String(seq).padStart(3, '0')}`;
@@ -756,6 +772,8 @@ export function generateClientFallbackResponse(
         difficulty: (['EASY', 'MEDIUM', 'HARD'].includes(item.difficulty?.toUpperCase() || '')
           ? (item.difficulty!.toUpperCase() as 'EASY' | 'MEDIUM' | 'HARD')
           : 'MEDIUM'),
+        aiAnalyzed: false,
+        aiModelUsed: null,
       };
     }),
   };
@@ -782,6 +800,7 @@ export async function requestCsvAiAnalysis(
       title: q.title,
       description: q.description || q.title,
       difficulty: q.difficulty,
+      index: q.sequence,
     })),
   };
 
@@ -840,24 +859,27 @@ export async function requestCsvAiAnalysis(
     } else {
       const errText = await res.text().catch(() => '');
       let cleanMsg = `Worker HTTP error (${res.status})`;
+      let code: string | null = null;
       try {
         const parsed = JSON.parse(errText);
         cleanMsg = parsed.error || parsed.aiError || cleanMsg;
+        code = parsed.errorCode || null;
       } catch {
         if (errText) cleanMsg = `${cleanMsg}: ${errText.slice(0, 150)}`;
       }
       console.warn('[CsvAnalyzer] Worker returned non-200:', cleanMsg);
-      return generateClientFallbackResponse(validQuestions, cleanMsg);
+      return generateClientFallbackResponse(validQuestions, cleanMsg, code);
     }
   } catch (workerErr: any) {
     clearInterval(progressInterval);
     clearTimeout(timeoutId);
     const isTimeout = workerErr.name === 'AbortError';
     const errorMsg = isTimeout
-      ? 'OpenRouter AI analysis timed out after 35s. Local validation applied.'
+      ? 'OpenRouter AI analysis timed out after 35s. Deterministic local validation applied.'
       : (workerErr.message || 'Cloudflare Worker fetch error');
+    const errorCode = isTimeout ? 'OPENROUTER_TIMEOUT' : 'OPENROUTER_NETWORK_ERROR';
     console.warn('[CsvAnalyzer] Cloudflare Worker fetch error, applying fallback:', errorMsg);
-    return generateClientFallbackResponse(validQuestions, errorMsg);
+    return generateClientFallbackResponse(validQuestions, errorMsg, errorCode);
   }
 
   // Graceful fallback
@@ -876,11 +898,11 @@ export function mergeAiAnalysisIntoQuestions(
   const resultMap = new Map<number, any>();
   problemsList.forEach((p) => resultMap.set(p.sequence, p));
 
-  const isRealAi = Boolean(aiResponse.aiSuccess);
-
   return questions.map((q) => {
     const aiItem = resultMap.get(q.sequence);
     if (!aiItem) return q;
+
+    const isRealAi = Boolean(aiItem.aiAnalyzed !== undefined ? aiItem.aiAnalyzed : (aiResponse.aiSuccess && (aiResponse.aiAnalyzedCount ?? 0) > 0));
 
     const notesParts = [q.validationNotes];
     if (isRealAi && aiItem.issues && aiItem.issues.length > 0) {

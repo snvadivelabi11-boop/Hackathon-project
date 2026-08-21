@@ -21,6 +21,7 @@ export interface CsvProblemInputItem {
   title?: string;
   description: string;
   difficulty?: string;
+  index?: number;
 }
 
 export interface AnalyzedProblemOutputItem {
@@ -40,11 +41,24 @@ export interface AnalyzedProblemOutputItem {
   issues: string[];
   suggestions: string[];
   difficulty: 'EASY' | 'MEDIUM' | 'HARD';
+  aiAnalyzed?: boolean;
+  aiModelUsed?: string | null;
 }
 
-const BATCH_CHUNK_SIZE = 10;
-const CONCURRENCY_LIMIT = 3;
+const BATCH_CHUNK_SIZE = 5;
+const CONCURRENCY_LIMIT = 2;
 const DEFAULT_MODEL = '~anthropic/claude-sonnet-latest';
+
+export type OpenRouterErrorCode =
+  | 'OPENROUTER_INSUFFICIENT_CREDITS'
+  | 'OPENROUTER_UNAUTHORIZED'
+  | 'OPENROUTER_FORBIDDEN'
+  | 'OPENROUTER_RATE_LIMITED'
+  | 'OPENROUTER_MODEL_UNAVAILABLE'
+  | 'OPENROUTER_TIMEOUT'
+  | 'OPENROUTER_NETWORK_ERROR'
+  | 'OPENROUTER_INVALID_RESPONSE'
+  | 'OPENROUTER_GENERIC_ERROR';
 
 /**
  * Builds CORS headers for responses
@@ -58,6 +72,59 @@ function getCorsHeaders(origin: string | null, env: Env): HeadersInit {
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
     'Access-Control-Max-Age': '86400',
+  };
+}
+
+/**
+ * Classifies an error into a standardized machine-readable error code
+ */
+function classifyError(status: number, message: string): { code: OpenRouterErrorCode; cleanMessage: string } {
+  const msg = message || '';
+  if (status === 402 || msg.includes('402') || msg.includes('Insufficient credits') || msg.includes('OPENROUTER_INSUFFICIENT_CREDITS')) {
+    return {
+      code: 'OPENROUTER_INSUFFICIENT_CREDITS',
+      cleanMessage: 'OpenRouter AI analysis is unavailable because the configured OpenRouter account has insufficient credits.',
+    };
+  }
+  if (status === 401 || msg.includes('401') || msg.includes('OPENROUTER_UNAUTHORIZED') || msg.includes('Invalid OpenRouter API key')) {
+    return {
+      code: 'OPENROUTER_UNAUTHORIZED',
+      cleanMessage: 'OpenRouter API key is invalid or unauthorized.',
+    };
+  }
+  if (status === 403 || msg.includes('403') || msg.includes('OPENROUTER_FORBIDDEN')) {
+    return {
+      code: 'OPENROUTER_FORBIDDEN',
+      cleanMessage: 'OpenRouter access is forbidden for this account.',
+    };
+  }
+  if (status === 429 || msg.includes('429') || msg.includes('OPENROUTER_RATE_LIMITED')) {
+    return {
+      code: 'OPENROUTER_RATE_LIMITED',
+      cleanMessage: 'OpenRouter rate limit exceeded. Please wait a moment.',
+    };
+  }
+  if (status === 404 || msg.includes('404') || msg.includes('No endpoints found') || msg.includes('OPENROUTER_MODEL_UNAVAILABLE')) {
+    return {
+      code: 'OPENROUTER_MODEL_UNAVAILABLE',
+      cleanMessage: 'Configured AI model is currently unavailable on OpenRouter.',
+    };
+  }
+  if (msg.includes('AbortError') || msg.includes('timeout') || msg.includes('timed out') || msg.includes('OPENROUTER_TIMEOUT')) {
+    return {
+      code: 'OPENROUTER_TIMEOUT',
+      cleanMessage: 'OpenRouter AI analysis timed out.',
+    };
+  }
+  if (msg.includes('Failed to fetch') || msg.includes('network') || msg.includes('Network') || msg.includes('OPENROUTER_NETWORK_ERROR')) {
+    return {
+      code: 'OPENROUTER_NETWORK_ERROR',
+      cleanMessage: 'Network connection to OpenRouter failed.',
+    };
+  }
+  return {
+    code: 'OPENROUTER_GENERIC_ERROR',
+    cleanMessage: msg || 'OpenRouter AI analysis request failed.',
   };
 }
 
@@ -170,7 +237,9 @@ Respond with a JSON object in this exact structure:
 function normalizeAnalyzedItem(
   aiItem: any,
   fallbackInput: CsvProblemInputItem,
-  expectedSequence: number
+  expectedSequence: number,
+  isAiSuccess: boolean = false,
+  modelUsed: string | null = null
 ): AnalyzedProblemOutputItem {
   const item = aiItem || {};
   const rawSeq = item.sequence !== undefined && item.sequence !== null ? item.sequence : expectedSequence;
@@ -244,6 +313,8 @@ function normalizeAnalyzedItem(
     issues,
     suggestions,
     difficulty,
+    aiAnalyzed: isAiSuccess,
+    aiModelUsed: isAiSuccess ? modelUsed : null,
   };
 }
 
@@ -276,6 +347,8 @@ function generateFallbackResults(items: CsvProblemInputItem[]): AnalyzedProblemO
       difficulty: (item.difficulty && (item.difficulty.toUpperCase() === 'EASY' || item.difficulty.toUpperCase() === 'HARD')
         ? (item.difficulty.toUpperCase() as 'EASY' | 'HARD')
         : 'MEDIUM'),
+      aiAnalyzed: false,
+      aiModelUsed: null,
     };
   });
 }
@@ -292,11 +365,12 @@ async function callOpenRouter(prompt: string, apiKey: string, model: string): Pr
   ].filter((m, i, arr) => arr.indexOf(m) === i);
 
   let lastError: Error | null = null;
+  let lastStatus = 500;
 
   for (const currentModel of modelsToTry) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 25000); // 25s subrequest timeout
+      const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s subrequest timeout
 
       const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
@@ -311,7 +385,7 @@ async function callOpenRouter(prompt: string, apiKey: string, model: string): Pr
           messages: [
             {
               role: 'system',
-              content: 'You are an expert technical problem statement dataset analyzer. Output strict valid JSON arrays matching the requested schema without markdown fences or conversational text.',
+              content: 'You are an expert technical problem statement dataset analyzer. Output strict valid JSON matching the requested schema without markdown fences.',
             },
             {
               role: 'user',
@@ -326,43 +400,48 @@ async function callOpenRouter(prompt: string, apiKey: string, model: string): Pr
       });
 
       clearTimeout(timeoutId);
+      lastStatus = res.status;
 
       if (!res.ok) {
         const errText = await res.text().catch(() => '');
         const cleanErr = sanitizeError(errText, apiKey);
+        const classification = classifyError(res.status, cleanErr);
+
         if (res.status === 404) {
-          lastError = new Error(`OpenRouter model "${currentModel}" not available: ${cleanErr}`);
-          continue; // Try fallback candidate model if 404
+          lastError = new Error(`OPENROUTER_MODEL_UNAVAILABLE: Model "${currentModel}" not available: ${cleanErr}`);
+          continue; // Try fallback candidate model
         }
         if (res.status === 402) {
-          lastError = new Error(`OPENROUTER_INSUFFICIENT_CREDITS: OpenRouter API error (402): Insufficient credits on OpenRouter account for ${currentModel}.`);
-          continue; // Try lower-cost candidate model if 402
+          lastError = new Error(`OPENROUTER_INSUFFICIENT_CREDITS: ${classification.cleanMessage}`);
+          continue; // Try lower-cost candidate model or fail fast
         }
         if (res.status === 401) {
-          throw new Error(`OPENROUTER_INVALID_KEY: OpenRouter API error (401): Invalid OpenRouter API key.`);
+          throw new Error(`OPENROUTER_UNAUTHORIZED: ${classification.cleanMessage}`);
         }
-        throw new Error(`OpenRouter API error (${res.status}): ${cleanErr}`);
+        throw new Error(`${classification.code}: ${cleanErr}`);
       }
 
       const json: any = await res.json();
       const choice = json.choices?.[0]?.message?.content;
       if (!choice) {
-        throw new Error('OpenRouter returned an empty response.');
+        throw new Error('OPENROUTER_INVALID_RESPONSE: OpenRouter returned an empty response.');
       }
 
       const modelUsed = json.model || currentModel;
       return { content: choice, modelUsed };
     } catch (err: any) {
       const isAbort = err.name === 'AbortError';
-      const errMsg = isAbort ? 'OpenRouter request timed out after 25s.' : err.message;
-      lastError = new Error(sanitizeError(errMsg, apiKey));
+      const errMsg = isAbort ? 'OPENROUTER_TIMEOUT: OpenRouter request timed out after 20s.' : err.message;
+      const classification = classifyError(lastStatus, errMsg);
+      lastError = new Error(sanitizeError(classification.cleanMessage ? `${classification.code}: ${classification.cleanMessage}` : errMsg, apiKey));
+
       if (!errMsg.includes('404') && !errMsg.includes('402')) {
-        break; // Fail fast on 401, timeouts, and network errors without subrequest loops
+        break; // Fail fast on timeouts, auth, or network errors
       }
     }
   }
 
-  throw lastError || new Error('OpenRouter call failed.');
+  throw lastError || new Error('OPENROUTER_GENERIC_ERROR: OpenRouter call failed.');
 }
 
 export async function handleWorkerRequest(request: Request, env: Env): Promise<Response> {
@@ -374,16 +453,36 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
     return new Response(null, { status: 204, headers: corsHeaders });
   }
 
-    const url = new URL(request.url);
+  const url = new URL(request.url);
 
-    // Health check endpoint
-    if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
+  // Health check endpoint
+  if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
+    return new Response(
+      JSON.stringify({
+        status: 'healthy',
+        service: 'hackathon-csv-ai-analyzer',
+        model: env.OPENROUTER_MODEL || DEFAULT_MODEL,
+        hasApiKey: Boolean(env.OPENROUTER_API_KEY && env.OPENROUTER_API_KEY.length > 5),
+        timestamp: new Date().toISOString(),
+      }),
+      {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      }
+    );
+  }
+
+  // Pre-flight AI Health Check endpoint (checks auth and credit status in < 500ms)
+  if (request.method === 'POST' && (url.pathname === '/ai-health-check' || url.pathname === '/health-check-ai')) {
+    const apiKey = env.OPENROUTER_API_KEY || '';
+    if (!apiKey) {
       return new Response(
         JSON.stringify({
-          status: 'healthy',
-          service: 'hackathon-csv-ai-analyzer',
-          model: env.OPENROUTER_MODEL || DEFAULT_MODEL,
-          timestamp: new Date().toISOString(),
+          healthy: false,
+          authenticated: false,
+          creditsAvailable: false,
+          errorCode: 'OPENROUTER_UNAUTHORIZED',
+          error: 'OpenRouter API key is not configured on Cloudflare Worker secret.',
         }),
         {
           status: 200,
@@ -392,164 +491,239 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
       );
     }
 
-    // AI Analysis Endpoint
-    if (request.method === 'POST' && (url.pathname === '/analyze-csv' || url.pathname === '/analyze-csv-problems' || url.pathname === '/')) {
-      try {
-        const body: any = await request.json().catch(() => null);
-        if (!body || !Array.isArray(body.questions) || body.questions.length === 0) {
-          return new Response(
-            JSON.stringify({
-              success: false,
-              error: 'Invalid request: "questions" array is required and must not be empty.',
-            }),
-            {
-              status: 400,
-              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            }
-          );
-        }
-
-        const inputItems = body.questions as CsvProblemInputItem[];
-        const totalItems = inputItems.length;
-        const model = env.OPENROUTER_MODEL || DEFAULT_MODEL;
-        const apiKey = env.OPENROUTER_API_KEY || '';
-
-        // If no API key configured on worker, return structured fallback with informative note
-        if (!apiKey) {
-          const fallbackProblems = generateFallbackResults(inputItems);
-          return new Response(
-            JSON.stringify({
-              success: true,
-              totalProblems: fallbackProblems.length,
-              aiModelUsed: model,
-              aiSuccess: false,
-              aiError: 'OpenRouter API key is not configured on Cloudflare Worker secret.',
-              problems: fallbackProblems,
-            }),
-            {
-              status: 200,
-              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            }
-          );
-        }
-
-        const allAnalyzedResults: AnalyzedProblemOutputItem[] = [];
-        let aiSuccessCount = 0;
-        let lastAiError: string | null = null;
-        let lastModelUsed = model;
-
-        // Split into chunks of 5 items
-        const chunks: CsvProblemInputItem[][] = [];
-        for (let i = 0; i < totalItems; i += BATCH_CHUNK_SIZE) {
-          chunks.push(inputItems.slice(i, i + BATCH_CHUNK_SIZE));
-        }
-
-        // Process chunks in concurrent batches of up to CONCURRENCY_LIMIT (3)
-        for (let b = 0; b < chunks.length; b += CONCURRENCY_LIMIT) {
-          const currentBatch = chunks.slice(b, b + CONCURRENCY_LIMIT);
-          const batchPromises = currentBatch.map(async (chunk, batchIdx) => {
-            const chunkNumber = b + batchIdx + 1;
-            const prompt = buildBatchPrompt(chunk);
-            try {
-              const { content: aiResponseText, modelUsed } = await callOpenRouter(prompt, apiKey, model);
-              
-              const cleaned = aiResponseText
-                .replace(/^```(?:json)?\s*/i, '')
-                .replace(/\s*```\s*$/i, '')
-                .trim();
-
-              let parsedJson = JSON.parse(cleaned);
-
-              if (!Array.isArray(parsedJson)) {
-                if (parsedJson && Array.isArray(parsedJson.problems)) {
-                  parsedJson = parsedJson.problems;
-                } else if (parsedJson && Array.isArray(parsedJson.results)) {
-                  parsedJson = parsedJson.results;
-                } else if (parsedJson && Array.isArray(parsedJson.items)) {
-                  parsedJson = parsedJson.items;
-                } else {
-                  throw new Error('AI response structure is not an array.');
-                }
-              }
-
-              // Strict 1:1 mapping against chunk inputs
-              const mappedResults = chunk.map((inputItem, cIdx) => {
-                const matched = parsedJson.find((p: any) => p.sequence === inputItem.sequence) || parsedJson[cIdx];
-                return normalizeAnalyzedItem(matched, inputItem, inputItem.sequence);
-              });
-
-              return {
-                success: true,
-                count: chunk.length,
-                results: mappedResults,
-                error: null,
-                modelUsed,
-              };
-            } catch (err: any) {
-              console.error(`[Worker] Chunk ${chunkNumber} AI call failed:`, err.message);
-              return {
-                success: false,
-                count: 0,
-                results: generateFallbackResults(chunk),
-                error: err.message || 'AI batch analysis failed',
-                modelUsed: model,
-              };
-            }
-          });
-
-          const batchOutputs = await Promise.all(batchPromises);
-          for (const output of batchOutputs) {
-            if (output.success) {
-              aiSuccessCount += output.count;
-              if (output.modelUsed) lastModelUsed = output.modelUsed;
-            } else if (output.error) {
-              lastAiError = output.error;
-            }
-            allAnalyzedResults.push(...output.results);
-          }
-        }
-
-        // Sort strictly by order / sequence
-        allAnalyzedResults.sort((a, b) => a.order - b.order || a.sequence - b.sequence);
-
-        const overallAiSuccess = aiSuccessCount === totalItems && !lastAiError;
-
+    try {
+      const authRes = await fetch('https://openrouter.ai/api/v1/auth/key', {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!authRes.ok) {
+        const errText = await authRes.text().catch(() => '');
         return new Response(
           JSON.stringify({
-            success: true,
-            totalProblems: allAnalyzedResults.length,
-            aiModelUsed: lastModelUsed,
-            aiSuccess: overallAiSuccess,
-            aiError: lastAiError,
-            problems: allAnalyzedResults,
+            healthy: false,
+            authenticated: false,
+            creditsAvailable: false,
+            errorCode: 'OPENROUTER_UNAUTHORIZED',
+            error: sanitizeError(errText, apiKey),
           }),
           {
             status: 200,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           }
         );
-      } catch (err: any) {
+      }
+
+      const authData: any = await authRes.json();
+      return new Response(
+        JSON.stringify({
+          healthy: true,
+          authenticated: true,
+          creditsAvailable: authData?.data?.usage !== undefined,
+          isFreeTier: Boolean(authData?.data?.is_free_tier),
+          label: authData?.data?.label,
+          model: env.OPENROUTER_MODEL || DEFAULT_MODEL,
+        }),
+        {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      );
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({
+          healthy: false,
+          authenticated: false,
+          creditsAvailable: false,
+          errorCode: 'OPENROUTER_NETWORK_ERROR',
+          error: sanitizeError(err.message, apiKey),
+        }),
+        {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      );
+    }
+  }
+
+  // AI Analysis Endpoint
+  if (request.method === 'POST' && (url.pathname === '/analyze-csv' || url.pathname === '/analyze-csv-problems' || url.pathname === '/')) {
+    try {
+      const body: any = await request.json().catch(() => null);
+      if (!body || !Array.isArray(body.questions) || body.questions.length === 0) {
         return new Response(
           JSON.stringify({
             success: false,
-            error: err.message || 'Internal worker error during CSV analysis.',
+            error: 'Invalid request: "questions" array is required and must not be empty.',
           }),
           {
-            status: 500,
+            status: 400,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           }
         );
       }
-    }
 
-    // Default 404
-    return new Response(
-      JSON.stringify({ error: 'Endpoint not found. Use POST /analyze-csv' }),
-      {
-        status: 404,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      const inputItems = body.questions as CsvProblemInputItem[];
+      const totalItems = inputItems.length;
+      const model = env.OPENROUTER_MODEL || DEFAULT_MODEL;
+      const apiKey = env.OPENROUTER_API_KEY || '';
+
+      // If no API key configured on worker, return structured fallback with clear note
+      if (!apiKey) {
+        const fallbackProblems = generateFallbackResults(inputItems);
+        return new Response(
+          JSON.stringify({
+            success: true,
+            totalProblems: fallbackProblems.length,
+            aiAnalyzedCount: 0,
+            aiModelUsed: model,
+            aiSuccess: false,
+            errorCode: 'OPENROUTER_UNAUTHORIZED',
+            aiError: 'OpenRouter API key is not configured on Cloudflare Worker secret.',
+            problems: fallbackProblems,
+          }),
+          {
+            status: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          }
+        );
       }
-    );
+
+      const allAnalyzedResults: AnalyzedProblemOutputItem[] = [];
+      let aiSuccessCount = 0;
+      let lastAiError: string | null = null;
+      let lastErrorCode: OpenRouterErrorCode | null = null;
+      let lastModelUsed = model;
+      let shouldStopBatch = false;
+
+      // Split into chunks of 5 items
+      const chunks: CsvProblemInputItem[][] = [];
+      for (let i = 0; i < totalItems; i += BATCH_CHUNK_SIZE) {
+        chunks.push(inputItems.slice(i, i + BATCH_CHUNK_SIZE));
+      }
+
+      // Process chunks in safe concurrency of up to CONCURRENCY_LIMIT (2)
+      for (let b = 0; b < chunks.length; b += CONCURRENCY_LIMIT) {
+        if (shouldStopBatch) {
+          for (let remainingIdx = b; remainingIdx < chunks.length; remainingIdx++) {
+            allAnalyzedResults.push(...generateFallbackResults(chunks[remainingIdx]));
+          }
+          break;
+        }
+
+        const currentBatch = chunks.slice(b, b + CONCURRENCY_LIMIT);
+        const batchPromises = currentBatch.map(async (chunk, batchIdx) => {
+          const chunkNumber = b + batchIdx + 1;
+          const prompt = buildBatchPrompt(chunk);
+          try {
+            const { content: aiResponseText, modelUsed } = await callOpenRouter(prompt, apiKey, model);
+            
+            const cleaned = aiResponseText
+              .replace(/^```(?:json)?\s*/i, '')
+              .replace(/\s*```\s*$/i, '')
+              .trim();
+
+            let parsedJson = JSON.parse(cleaned);
+
+            if (!Array.isArray(parsedJson)) {
+              if (parsedJson && Array.isArray(parsedJson.problems)) {
+                parsedJson = parsedJson.problems;
+              } else if (parsedJson && Array.isArray(parsedJson.results)) {
+                parsedJson = parsedJson.results;
+              } else if (parsedJson && Array.isArray(parsedJson.items)) {
+                parsedJson = parsedJson.items;
+              } else {
+                throw new Error('AI response structure is not an array.');
+              }
+            }
+
+            // Strict 1:1 mapping against chunk inputs
+            const mappedResults = chunk.map((inputItem, cIdx) => {
+              const matched = parsedJson.find((p: any) => p.sequence === (inputItem.sequence || inputItem.index)) || parsedJson[cIdx];
+              return normalizeAnalyzedItem(matched, inputItem, inputItem.sequence || inputItem.index || cIdx + 1, true, modelUsed);
+            });
+
+            return {
+              success: true,
+              count: chunk.length,
+              results: mappedResults,
+              error: null,
+              errorCode: null,
+              modelUsed,
+            };
+          } catch (err: any) {
+            console.error(`[Worker] Chunk ${chunkNumber} AI call failed:`, err.message);
+            const classification = classifyError(500, err.message);
+            return {
+              success: false,
+              count: 0,
+              results: generateFallbackResults(chunk),
+              error: classification.cleanMessage || err.message,
+              errorCode: classification.code,
+              modelUsed: model,
+            };
+          }
+        });
+
+        const batchOutputs = await Promise.all(batchPromises);
+        for (const output of batchOutputs) {
+          if (output.success) {
+            aiSuccessCount += output.count;
+            if (output.modelUsed) lastModelUsed = output.modelUsed;
+          } else if (output.error) {
+            lastAiError = output.error;
+            lastErrorCode = output.errorCode;
+            if (output.errorCode === 'OPENROUTER_INSUFFICIENT_CREDITS' || output.errorCode === 'OPENROUTER_UNAUTHORIZED') {
+              shouldStopBatch = true;
+            }
+          }
+          allAnalyzedResults.push(...output.results);
+        }
+      }
+
+      // Sort strictly by order / sequence
+      allAnalyzedResults.sort((a, b) => a.order - b.order || a.sequence - b.sequence);
+
+      const overallAiSuccess = aiSuccessCount === totalItems && !lastAiError;
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          totalProblems: allAnalyzedResults.length,
+          aiAnalyzedCount: aiSuccessCount,
+          aiModelUsed: lastModelUsed,
+          aiSuccess: overallAiSuccess,
+          errorCode: lastErrorCode,
+          aiError: lastAiError,
+          problems: allAnalyzedResults,
+        }),
+        {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      );
+    } catch (err: any) {
+      const classification = classifyError(500, err.message);
+      return new Response(
+        JSON.stringify({
+          success: false,
+          errorCode: classification.code,
+          error: classification.cleanMessage || err.message || 'Internal worker error during CSV analysis.',
+        }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      );
+    }
+  }
+
+  // Default 404
+  return new Response(
+    JSON.stringify({ error: 'Endpoint not found. Use POST /analyze-csv' }),
+    {
+      status: 404,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    }
+  );
 }
 
 export default {
