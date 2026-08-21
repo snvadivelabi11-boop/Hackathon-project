@@ -438,9 +438,9 @@ export const RoundsPage: React.FC = () => {
                     </div>
 
                     <div style={{ fontSize: '12px', color: '#334155', marginBottom: 12, lineHeight: 1.6 }}>
-                      <div><strong>Started:</strong> {formatISTDateTime(round.actualStartedAt || round.startTime)}</div>
+                      <div><strong>Started:</strong> {formatISTDateTime(round.startTime)}</div>
                       <div><strong>Deadline:</strong> {formatISTDateTime(round.endTime)}</div>
-                      <div><strong>Duration:</strong> {calculateDurationFormatted(round.actualStartedAt || round.startTime, round.endTime)}</div>
+                      <div><strong>Duration:</strong> {calculateDurationFormatted(round.startTime, round.endTime)}</div>
                     </div>
 
                     <div style={{ background: '#ffffff', padding: '10px 14px', borderRadius: 8, border: '1px solid #dcfce7', textAlign: 'center', marginBottom: 16 }}>
@@ -503,8 +503,9 @@ export const RoundsPage: React.FC = () => {
                     </div>
 
                     <div style={{ fontSize: '12px', color: '#64748b', marginBottom: 16, lineHeight: 1.6 }}>
-                      <div><strong>Started:</strong> {formatISTDateTime(round.actualStartedAt || round.startTime)}</div>
-                      <div><strong>Ended:</strong> {formatISTDateTime(round.actualEndedAt || round.endTime)}</div>
+                      <div><strong>Started:</strong> {formatISTDateTime(round.startTime)}</div>
+                      <div><strong>Ended:</strong> {formatISTDateTime(round.endTime)}</div>
+                      <div><strong>Duration:</strong> {calculateDurationFormatted(round.startTime, round.endTime)}</div>
                       <div><strong>Uploads:</strong> Locked (Submissions closed)</div>
                     </div>
 

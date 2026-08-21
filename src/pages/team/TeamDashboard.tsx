@@ -92,14 +92,23 @@ export const TeamDashboard: React.FC = () => {
   const r3Score = scores.find((s) => (s.roundId || '').includes('3') || s.round === 3)?.totalMarks || 0;
   const totalScore = Number((r1Score + r2Score + r3Score).toFixed(1));
 
-  const r1Eval = calculateRoundTimingEvaluation('round1', timingConfig, rounds.find((r) => r.id === 'round1'));
-  const r2Eval = calculateRoundTimingEvaluation('round2', timingConfig, rounds.find((r) => r.id === 'round2'));
-  const r3Eval = calculateRoundTimingEvaluation('round3', timingConfig, rounds.find((r) => r.id === 'round3'));
+  const r1Round = rounds.find((r) => r.id === 'round1') || rounds[0];
+  const r2Round = rounds.find((r) => r.id === 'round2') || rounds[1];
+  const r3Round = rounds.find((r) => r.id === 'round3') || rounds[2];
 
-  const isLiveOrActive = (evalState?: string) => evalState === 'ACTIVE' || evalState === 'LIVE';
+  const r1Eval = calculateRoundTimingEvaluation('round1', timingConfig, r1Round);
+  const r2Eval = calculateRoundTimingEvaluation('round2', timingConfig, r2Round);
+  const r3Eval = calculateRoundTimingEvaluation('round3', timingConfig, r3Round);
+
+  // Active round is determined strictly by the live evaluation state
   const activeRound =
-    rounds.find((r) => r.status === 'ACTIVE' || r.status === 'LIVE') ||
-    (isLiveOrActive(r1Eval.state) ? rounds[0] : isLiveOrActive(r2Eval.state) ? rounds[1] : isLiveOrActive(r3Eval.state) ? rounds[2] : null);
+    r1Eval.state === 'ACTIVE'
+      ? { ...r1Round, endTime: r1Eval.endTime.toISOString(), startTime: r1Eval.startTime.toISOString() }
+      : r2Eval.state === 'ACTIVE'
+      ? { ...r2Round, endTime: r2Eval.endTime.toISOString(), startTime: r2Eval.startTime.toISOString() }
+      : r3Eval.state === 'ACTIVE'
+      ? { ...r3Round, endTime: r3Eval.endTime.toISOString(), startTime: r3Eval.startTime.toISOString() }
+      : null;
   const isSelected = selection?.status === 'SELECTED';
 
   return (

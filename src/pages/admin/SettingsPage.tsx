@@ -52,7 +52,7 @@ import {
 import { useScoring } from '../../contexts/ScoringContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { ProblemAssignmentConfig, HackathonTimingConfig } from '../../types';
-import { formatISTDateTime, toIST } from '../../utils/date';
+import { formatISTDateTime, toIST, parseDateAndTimeToIso } from '../../utils/date';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -165,7 +165,7 @@ export const SettingsPage: React.FC = () => {
     setSavingTiming(true);
     try {
       const makeIso = (dateStr: string, timeStr: string) => {
-        return dayjs(`${dateStr} ${timeStr}`).toISOString();
+        return parseDateAndTimeToIso(dateStr, timeStr);
       };
 
       const startIso = makeIso(values.hackathonStartDate, values.hackathonStartTime || '09:00');
