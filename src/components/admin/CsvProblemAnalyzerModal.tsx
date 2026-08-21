@@ -752,11 +752,6 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
             {/* Statistics */}
             <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
               <Col xs={12} sm={6}>
-                <Card size="small" style={{ background: '#f8fafc', borderRadius: 8 }}>
-                  <Statistic title="Total CSV Rows" value={analysisResult.summary.totalRows} />
-                </Card>
-              </Col>
-              <Col xs={12} sm={6}>
                 <Card size="small" style={{ background: '#f0fdf4', borderColor: '#bbf7d0', borderRadius: 8 }}>
                   <Statistic
                     title="Valid Problems"
@@ -769,9 +764,18 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
                 <Card size="small" style={{ background: '#faf5ff', borderColor: '#e9d5ff', borderRadius: 8 }}>
                   <Statistic
                     title="AI Analyzed"
-                    value={analysisResult.summary.aiAnalyzedCount || 0}
-                    valueStyle={{ color: '#7c3aed', fontWeight: 700 }}
+                    value={analysisResult.aiAnalysisSuccess ? analysisResult.summary.aiAnalyzedCount || analysisResult.summary.validQuestions : 0}
+                    valueStyle={{ color: analysisResult.aiAnalysisSuccess ? '#7c3aed' : '#94a3b8', fontWeight: 700 }}
                     prefix={<RobotOutlined />}
+                  />
+                </Card>
+              </Col>
+              <Col xs={12} sm={6}>
+                <Card size="small" style={{ background: '#eff6ff', borderColor: '#bfdbfe', borderRadius: 8 }}>
+                  <Statistic
+                    title="Local Validation"
+                    value={analysisResult.aiAnalysisSuccess ? 0 : analysisResult.summary.validQuestions}
+                    valueStyle={{ color: analysisResult.aiAnalysisSuccess ? '#94a3b8' : '#2563eb', fontWeight: 700 }}
                   />
                 </Card>
               </Col>
@@ -780,7 +784,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
                   <Statistic
                     title="Issues / Duplicates"
                     value={analysisResult.summary.invalidRows}
-                    valueStyle={{ color: '#d97706' }}
+                    valueStyle={{ color: '#d97706', fontWeight: 700 }}
                   />
                 </Card>
               </Col>

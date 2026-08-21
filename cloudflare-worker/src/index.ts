@@ -252,7 +252,7 @@ function normalizeAnalyzedItem(
  */
 function generateFallbackResults(items: CsvProblemInputItem[]): AnalyzedProblemOutputItem[] {
   return items.map((item, idx) => {
-    const seq = item.sequence || idx + 1;
+    const seq = item.sequence || item.index || idx + 1;
     const psId = item.problemStatementId || `PS${String(seq).padStart(3, '0')}`;
     const title = item.title || `Problem Statement #${seq}`;
     const desc = item.description || title;
@@ -281,13 +281,14 @@ function generateFallbackResults(items: CsvProblemInputItem[]): AnalyzedProblemO
 }
 
 /**
- * Calls OpenRouter AI with exponential backoff retries
+ * Calls OpenRouter AI with fast fail-fast error handling
  */
 async function callOpenRouter(prompt: string, apiKey: string, model: string): Promise<{ content: string; modelUsed: string }> {
   const modelsToTry = [
     model,
     'anthropic/claude-sonnet-4.6',
-    'openrouter/free',
+    '~anthropic/claude-sonnet-latest',
+    'openai/gpt-4o-mini',
   ].filter((m, i, arr) => arr.indexOf(m) === i);
 
   let lastError: Error | null = null;
@@ -295,7 +296,7 @@ async function callOpenRouter(prompt: string, apiKey: string, model: string): Pr
   for (const currentModel of modelsToTry) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 45000);
+      const timeoutId = setTimeout(() => controller.abort(), 25000); // 25s subrequest timeout
 
       const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
@@ -318,7 +319,7 @@ async function callOpenRouter(prompt: string, apiKey: string, model: string): Pr
             },
           ],
           temperature: 0.1,
-          max_tokens: 3000,
+          max_tokens: 1500,
           response_format: { type: 'json_object' },
         }),
         signal: controller.signal,
@@ -331,15 +332,14 @@ async function callOpenRouter(prompt: string, apiKey: string, model: string): Pr
         const cleanErr = sanitizeError(errText, apiKey);
         if (res.status === 404) {
           lastError = new Error(`OpenRouter model "${currentModel}" not available: ${cleanErr}`);
-          continue; // Try fallback model only if 404
+          continue; // Try fallback candidate model if 404
         }
         if (res.status === 402) {
           lastError = new Error(`OPENROUTER_INSUFFICIENT_CREDITS: OpenRouter API error (402): Insufficient credits on OpenRouter account for ${currentModel}.`);
-          // Try free model fallback if available
-          continue;
+          continue; // Try lower-cost candidate model if 402
         }
         if (res.status === 401) {
-          throw new Error(`OpenRouter API error (401): Invalid OpenRouter API key.`);
+          throw new Error(`OPENROUTER_INVALID_KEY: OpenRouter API error (401): Invalid OpenRouter API key.`);
         }
         throw new Error(`OpenRouter API error (${res.status}): ${cleanErr}`);
       }
@@ -354,10 +354,10 @@ async function callOpenRouter(prompt: string, apiKey: string, model: string): Pr
       return { content: choice, modelUsed };
     } catch (err: any) {
       const isAbort = err.name === 'AbortError';
-      const errMsg = isAbort ? 'OpenRouter request timed out after 45s.' : err.message;
+      const errMsg = isAbort ? 'OpenRouter request timed out after 25s.' : err.message;
       lastError = new Error(sanitizeError(errMsg, apiKey));
-      if (!errMsg.includes('404') && !errMsg.includes('402') && !errMsg.includes('OPENROUTER_INSUFFICIENT_CREDITS')) {
-        break; // Do not waste subrequests on non-model errors
+      if (!errMsg.includes('404') && !errMsg.includes('402')) {
+        break; // Fail fast on 401, timeouts, and network errors without subrequest loops
       }
     }
   }
