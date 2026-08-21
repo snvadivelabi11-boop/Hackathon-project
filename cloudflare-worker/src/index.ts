@@ -393,7 +393,7 @@ async function callOpenRouter(prompt: string, apiKey: string, model: string): Pr
             },
           ],
           temperature: 0.1,
-          max_tokens: 1500,
+          max_tokens: 3500,
           response_format: { type: 'json_object' },
         }),
         signal: controller.signal,
