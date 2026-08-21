@@ -356,7 +356,8 @@ export async function submitFileRecord(
   const roundNum = roundId.includes('1') ? 1 : roundId.includes('2') ? 2 : 3;
 
   const filesMapped = filesArray.map((f, fIdx) => ({
-    slot: (f as any).slot || fIdx + 1,
+    order: (f as any).order || (f as any).slot || fIdx + 1,
+    slot: (f as any).slot || (f as any).order || fIdx + 1,
     fileUrl: f.downloadUrl || (f as any).fileUrl || (f as any).url,
     url: f.downloadUrl || (f as any).fileUrl || (f as any).url,
     cloudinaryUrl: f.downloadUrl || (f as any).cloudinaryUrl || (f as any).fileUrl,

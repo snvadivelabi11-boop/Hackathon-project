@@ -358,6 +358,7 @@ export interface Round {
 }
 
 export interface SubmissionFile {
+  order?: number;
   slot?: number;
   fileUrl: string;
   url?: string;

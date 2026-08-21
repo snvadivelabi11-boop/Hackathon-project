@@ -164,7 +164,7 @@ export const Round1Page: React.FC = () => {
         const slotData = await uploadSubmissionFile(teamId, 'round1', file, (p) => {
           setUploadProgress(Math.min(95, baseProgress + Math.round((p / activeFiles.length) * 0.9)));
         });
-        uploadedResults.push({ ...slotData, slot });
+        uploadedResults.push({ ...slotData, slot, order: i + 1 });
       }
 
       await submitFileRecord(teamId, teamName, 'round1', uploadedResults);

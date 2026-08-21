@@ -32,7 +32,8 @@ export const normalizeSubmission = (data: any, id: string = ''): Submission => {
 
   const files: any[] = Array.isArray(data.files) && data.files.length > 0
     ? data.files.map((f: any, fIdx: number) => ({
-        slot: safeNumber(f.slot, fIdx + 1),
+        order: safeNumber(f.order, safeNumber(f.slot, fIdx + 1)),
+        slot: safeNumber(f.slot, safeNumber(f.order, fIdx + 1)),
         fileUrl: safeString(f.cloudinaryUrl || f.fileUrl || f.url),
         url: safeString(f.cloudinaryUrl || f.fileUrl || f.url),
         cloudinaryUrl: safeString(f.cloudinaryUrl || f.fileUrl || f.url),
@@ -49,6 +50,7 @@ export const normalizeSubmission = (data: any, id: string = ''): Submission => {
       }))
     : (data.fileUrl || data.cloudinaryUrl)
       ? [{
+          order: 1,
           slot: 1,
           fileUrl: safeString(data.cloudinaryUrl || data.fileUrl || data.url),
           url: safeString(data.cloudinaryUrl || data.fileUrl || data.url),
