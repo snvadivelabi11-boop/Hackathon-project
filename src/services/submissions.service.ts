@@ -355,15 +355,18 @@ export async function submitFileRecord(
   const version = existingDoc && existingDoc.exists() ? (existingDoc.data().version || 1) + 1 : 1;
   const roundNum = roundId.includes('1') ? 1 : roundId.includes('2') ? 2 : 3;
 
-  const filesMapped = filesArray.map((f) => ({
-    fileUrl: f.downloadUrl,
-    cloudinaryUrl: f.downloadUrl,
-    fileName: f.fileName,
-    originalFileName: f.fileName,
+  const filesMapped = filesArray.map((f, fIdx) => ({
+    slot: (f as any).slot || fIdx + 1,
+    fileUrl: f.downloadUrl || (f as any).fileUrl || (f as any).url,
+    url: f.downloadUrl || (f as any).fileUrl || (f as any).url,
+    cloudinaryUrl: f.downloadUrl || (f as any).cloudinaryUrl || (f as any).fileUrl,
+    fileName: f.fileName || (f as any).originalFileName || `image_${fIdx + 1}`,
+    originalFileName: f.fileName || (f as any).originalFileName || `image_${fIdx + 1}`,
     fileType: f.fileType || 'image/png',
+    mimeType: f.fileType || 'image/png',
     format: f.format || f.fileName.split('.').pop() || 'png',
     resourceType: f.resourceType || 'image',
-    fileSizeBytes: f.sizeBytes,
+    fileSizeBytes: f.sizeBytes || (f as any).fileSizeBytes || 0,
     publicId: f.publicId,
     cloudinaryPublicId: f.publicId,
     uploadedAt: new Date().toISOString(),

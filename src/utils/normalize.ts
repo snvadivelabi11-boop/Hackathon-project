@@ -31,30 +31,38 @@ export const normalizeSubmission = (data: any, id: string = ''): Submission => {
   const roundId = data.roundId ? safeString(data.roundId) : `round${roundNum}`;
 
   const files: any[] = Array.isArray(data.files) && data.files.length > 0
-    ? data.files.map((f: any) => ({
+    ? data.files.map((f: any, fIdx: number) => ({
+        slot: safeNumber(f.slot, fIdx + 1),
         fileUrl: safeString(f.cloudinaryUrl || f.fileUrl || f.url),
+        url: safeString(f.cloudinaryUrl || f.fileUrl || f.url),
         cloudinaryUrl: safeString(f.cloudinaryUrl || f.fileUrl || f.url),
-        fileName: safeString(f.fileName || f.originalFileName || f.originalFilename || 'image_file'),
-        originalFileName: safeString(f.originalFileName || f.fileName),
-        fileType: safeString(f.fileType || f.format || 'image/png'),
+        fileName: safeString(f.fileName || f.originalFileName || f.originalFilename || `image_${fIdx + 1}`),
+        originalFileName: safeString(f.originalFileName || f.fileName || `image_${fIdx + 1}`),
+        fileType: safeString(f.fileType || f.mimeType || f.format || 'image/png'),
+        mimeType: safeString(f.mimeType || f.fileType || 'image/png'),
         format: safeString(f.format),
         resourceType: safeString(f.resourceType || 'image'),
         fileSizeBytes: safeNumber(f.fileSizeBytes || f.fileSize || f.bytes, 0),
         publicId: safeString(f.cloudinaryPublicId || f.publicId),
         cloudinaryPublicId: safeString(f.cloudinaryPublicId || f.publicId),
+        uploadedAt: f.uploadedAt || data.uploadedAt || data.submittedAt || null,
       }))
     : (data.fileUrl || data.cloudinaryUrl)
       ? [{
+          slot: 1,
           fileUrl: safeString(data.cloudinaryUrl || data.fileUrl || data.url),
+          url: safeString(data.cloudinaryUrl || data.fileUrl || data.url),
           cloudinaryUrl: safeString(data.cloudinaryUrl || data.fileUrl || data.url),
           fileName: safeString(data.fileName || data.originalFileName || 'submission_file'),
           originalFileName: safeString(data.originalFileName || data.fileName),
           fileType: safeString(data.fileType || data.format || (roundNum === 1 ? 'image/png' : 'raw')),
+          mimeType: safeString(data.mimeType || data.fileType || (roundNum === 1 ? 'image/png' : 'application/octet-stream')),
           format: safeString(data.format),
           resourceType: safeString(data.resourceType || (roundNum === 1 ? 'image' : 'raw')),
           fileSizeBytes: safeNumber(data.fileSizeBytes || data.fileSize || data.bytes, 0),
           publicId: safeString(data.cloudinaryPublicId || data.publicId),
           cloudinaryPublicId: safeString(data.cloudinaryPublicId || data.publicId),
+          uploadedAt: data.uploadedAt || data.submittedAt || null,
         }]
       : [];
 

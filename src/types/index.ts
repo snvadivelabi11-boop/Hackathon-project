@@ -358,13 +358,16 @@ export interface Round {
 }
 
 export interface SubmissionFile {
+  slot?: number;
   fileUrl: string;
+  url?: string;
   cloudinaryUrl?: string;
   fileName: string;
   originalFileName?: string;
   publicId?: string | null;
   cloudinaryPublicId?: string | null;
   fileType?: string;
+  mimeType?: string;
   format?: string;
   resourceType?: string;
   fileSizeBytes?: number;

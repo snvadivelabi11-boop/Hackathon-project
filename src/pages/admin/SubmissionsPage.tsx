@@ -518,7 +518,7 @@ export const SubmissionsPage: React.FC = () => {
                                             bodyStyle={{ padding: 6 }}
                                           >
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                                              <Text strong style={{ fontSize: '11px' }}>Image {fIdx + 1}</Text>
+                                              <Text strong style={{ fontSize: '11px' }}>Image {file.slot || fIdx + 1}</Text>
                                             </div>
                                             <div
                                               style={{
