@@ -1,12 +1,13 @@
 /**
  * Cloudflare Worker — Problem Statement CSV AI Analyzer Backend
- * Securely communicates with OpenRouter (Claude 3.5 Sonnet) at Cloudflare's edge.
- * Enforces 20-item chunking, strict non-fabrication prompt, and 1:1 input reconciliation.
+ * Securely communicates with Google Gemini API at Cloudflare's edge.
+ * Enforces safe batching, strict non-fabrication prompt, structured JSON mode, and 1:1 input reconciliation.
  */
 
 export interface Env {
-  OPENROUTER_API_KEY?: string;
-  OPENROUTER_MODEL?: string;
+  GEMINI_API_KEY?: string;
+  GEMINI_MODEL?: string;
+  OPENROUTER_API_KEY?: string; // Legacy fallback reference
   ALLOWED_ORIGINS?: string;
 }
 
@@ -45,20 +46,20 @@ export interface AnalyzedProblemOutputItem {
   aiModelUsed?: string | null;
 }
 
-const BATCH_CHUNK_SIZE = 5;
+const BATCH_CHUNK_SIZE = 15;
 const CONCURRENCY_LIMIT = 2;
-const DEFAULT_MODEL = '~anthropic/claude-sonnet-latest';
+const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
 
-export type OpenRouterErrorCode =
-  | 'OPENROUTER_INSUFFICIENT_CREDITS'
-  | 'OPENROUTER_UNAUTHORIZED'
-  | 'OPENROUTER_FORBIDDEN'
-  | 'OPENROUTER_RATE_LIMITED'
-  | 'OPENROUTER_MODEL_UNAVAILABLE'
-  | 'OPENROUTER_TIMEOUT'
-  | 'OPENROUTER_NETWORK_ERROR'
-  | 'OPENROUTER_INVALID_RESPONSE'
-  | 'OPENROUTER_GENERIC_ERROR';
+export type GeminiErrorCode =
+  | 'INVALID_API_KEY'
+  | 'MODEL_UNAVAILABLE'
+  | 'RATE_LIMITED'
+  | 'QUOTA_EXCEEDED'
+  | 'TIMEOUT'
+  | 'NETWORK_ERROR'
+  | 'INVALID_AI_RESPONSE'
+  | 'STRUCTURED_OUTPUT_ERROR'
+  | 'GEMINI_GENERIC_ERROR';
 
 /**
  * Builds CORS headers for responses
@@ -76,55 +77,68 @@ function getCorsHeaders(origin: string | null, env: Env): HeadersInit {
 }
 
 /**
- * Classifies an error into a standardized machine-readable error code
+ * Classifies an error into a standardized machine-readable Gemini error code
  */
-function classifyError(status: number, message: string): { code: OpenRouterErrorCode; cleanMessage: string } {
+function classifyError(status: number, message: string): { code: GeminiErrorCode; cleanMessage: string } {
   const msg = message || '';
-  if (status === 402 || msg.includes('402') || msg.includes('Insufficient credits') || msg.includes('OPENROUTER_INSUFFICIENT_CREDITS')) {
+
+  if (status === 400 && (msg.includes('API_KEY_INVALID') || msg.includes('API key not valid') || msg.includes('INVALID_API_KEY'))) {
     return {
-      code: 'OPENROUTER_INSUFFICIENT_CREDITS',
-      cleanMessage: 'OpenRouter AI analysis is unavailable because the configured OpenRouter account has insufficient credits.',
+      code: 'INVALID_API_KEY',
+      cleanMessage: 'Google Gemini API key is invalid or not authorized.',
     };
   }
-  if (status === 401 || msg.includes('401') || msg.includes('OPENROUTER_UNAUTHORIZED') || msg.includes('Invalid OpenRouter API key')) {
+  if (status === 401 || msg.includes('401') || msg.includes('UNAUTHENTICATED') || msg.includes('INVALID_API_KEY')) {
     return {
-      code: 'OPENROUTER_UNAUTHORIZED',
-      cleanMessage: 'OpenRouter API key is invalid or unauthorized.',
+      code: 'INVALID_API_KEY',
+      cleanMessage: 'Google Gemini API key authentication failed.',
     };
   }
-  if (status === 403 || msg.includes('403') || msg.includes('OPENROUTER_FORBIDDEN')) {
+  if (status === 403 || msg.includes('403') || msg.includes('PERMISSION_DENIED')) {
     return {
-      code: 'OPENROUTER_FORBIDDEN',
-      cleanMessage: 'OpenRouter access is forbidden for this account.',
+      code: 'INVALID_API_KEY',
+      cleanMessage: 'Google Gemini API access is forbidden or permission denied for this key.',
     };
   }
-  if (status === 429 || msg.includes('429') || msg.includes('OPENROUTER_RATE_LIMITED')) {
+  if (status === 429 || msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
+    if (msg.toLowerCase().includes('quota') || msg.includes('exceeded your current quota')) {
+      return {
+        code: 'QUOTA_EXCEEDED',
+        cleanMessage: 'Google Gemini API quota exceeded. Please check plan/billing details.',
+      };
+    }
     return {
-      code: 'OPENROUTER_RATE_LIMITED',
-      cleanMessage: 'OpenRouter rate limit exceeded. Please wait a moment.',
+      code: 'RATE_LIMITED',
+      cleanMessage: 'Google Gemini API rate limit reached. Please wait a moment.',
     };
   }
-  if (status === 404 || msg.includes('404') || msg.includes('No endpoints found') || msg.includes('OPENROUTER_MODEL_UNAVAILABLE')) {
+  if (status === 404 || msg.includes('404') || msg.includes('NOT_FOUND') || msg.includes('no longer available') || msg.includes('MODEL_UNAVAILABLE')) {
     return {
-      code: 'OPENROUTER_MODEL_UNAVAILABLE',
-      cleanMessage: 'Configured AI model is currently unavailable on OpenRouter.',
+      code: 'MODEL_UNAVAILABLE',
+      cleanMessage: 'Selected Google Gemini AI model is currently unavailable.',
     };
   }
-  if (msg.includes('AbortError') || msg.includes('timeout') || msg.includes('timed out') || msg.includes('OPENROUTER_TIMEOUT')) {
+  if (msg.includes('AbortError') || msg.includes('timeout') || msg.includes('timed out') || msg.includes('TIMEOUT')) {
     return {
-      code: 'OPENROUTER_TIMEOUT',
-      cleanMessage: 'OpenRouter AI analysis timed out.',
+      code: 'TIMEOUT',
+      cleanMessage: 'Google Gemini AI analysis request timed out.',
     };
   }
-  if (msg.includes('Failed to fetch') || msg.includes('network') || msg.includes('Network') || msg.includes('OPENROUTER_NETWORK_ERROR')) {
+  if (msg.includes('Failed to fetch') || msg.includes('network') || msg.includes('Network') || msg.includes('NETWORK_ERROR')) {
     return {
-      code: 'OPENROUTER_NETWORK_ERROR',
-      cleanMessage: 'Network connection to OpenRouter failed.',
+      code: 'NETWORK_ERROR',
+      cleanMessage: 'Network connection to Google Gemini API failed.',
+    };
+  }
+  if (msg.includes('JSON') || msg.includes('parse') || msg.includes('STRUCTURED_OUTPUT_ERROR')) {
+    return {
+      code: 'STRUCTURED_OUTPUT_ERROR',
+      cleanMessage: 'Failed to parse structured JSON response from Google Gemini AI.',
     };
   }
   return {
-    code: 'OPENROUTER_GENERIC_ERROR',
-    cleanMessage: msg || 'OpenRouter AI analysis request failed.',
+    code: 'GEMINI_GENERIC_ERROR',
+    cleanMessage: msg || 'Google Gemini AI analysis request failed.',
   };
 }
 
@@ -136,7 +150,8 @@ function sanitizeError(msg: string, key?: string): string {
   if (key && key.length > 5) {
     clean = clean.split(key).join('[REDACTED_API_KEY]');
   }
-  return clean.replace(/Bearer\s+[a-zA-Z0-9_\-\.]+/gi, 'Bearer [REDACTED_TOKEN]');
+  return clean.replace(/key=[a-zA-Z0-9_\-\.]+/gi, 'key=[REDACTED_KEY]')
+              .replace(/Bearer\s+[a-zA-Z0-9_\-\.]+/gi, 'Bearer [REDACTED_TOKEN]');
 }
 
 /**
@@ -178,52 +193,38 @@ function buildBatchPrompt(items: CsvProblemInputItem[]): string {
     2
   );
 
-  return `You are analyzing an uploaded hackathon problem-statement dataset.
+  return `You are an expert technical problem statement dataset analyzer for a hackathon.
 
-Read the supplied data carefully.
-
+Read the supplied problem statement dataset carefully.
 Identify every distinct problem statement.
-
 Do not invent information.
-
 Do not remove valid problem statements.
-
-Do not merge two distinct problem statements.
-
+Do not merge distinct problem statements.
 Do not create fake problem statements.
+Preserve the original problem statement content and ordering.
 
-Preserve the original problem statement content.
-
-Determine the correct order using the source data.
-
-Return ONLY valid JSON matching the required schema.
-
-If information is missing, return null rather than inventing a value.
-
-If the data is ambiguous, explicitly mark it as ambiguous.
-
-For EACH of the ${items.length} items in the array, output an object with these exact keys:
+For EACH of the ${items.length} items in the array, output a JSON object with these exact keys:
 - "sequence": integer matching the input sequence
 - "order": integer (1-based order in the problem statement sequence)
 - "problemStatementId": string (preserve sourceId if provided, or format as "PS" + 3-digit sequence like "PS001")
 - "title": string (the problem title or concise summary of the statement)
 - "description": string (the full, verbatim problem statement description from source)
-- "category": string (the category from source or inferred primary domain e.g. "Artificial Intelligence", "Fintech", "Healthtech", "IoT", "Cybersecurity", "General")
-- "team": string or null (the target team/assigned team if present in source, otherwise null)
-- "organization": string or null (the sponsoring organization/company if present in source, otherwise null)
-- "department": string or null (the department/unit if present in source, otherwise null)
-- "analysis": string (a concise technical summary explaining the problem scope and expected deliverables)
+- "category": string (the category from source or inferred primary domain e.g. "Artificial Intelligence", "Blockchain", "Healthcare", "IoT", "Cybersecurity", "General")
+- "team": string or null (target team if present in source, otherwise null)
+- "organization": string or null (sponsoring organization/company if present in source, otherwise null)
+- "department": string or null (department/unit if present in source, otherwise null)
+- "analysis": string (a concise technical summary explaining scope, architecture, and expected deliverables)
 - "confidence": float between 0.0 and 1.0 (confidence in problem clarity and extraction)
 - "isValid": boolean (true if actionable problem statement, false if empty/gibberish/header text)
-- "qualityScore": integer between 1 and 10 (overall quality score)
+- "qualityScore": integer between 1 and 10 (overall technical depth and quality)
 - "issues": array of strings (list of potential gaps, ambiguities, or missing requirements; empty array if clear)
-- "suggestions": array of strings (concrete improvements or extension ideas)
+- "suggestions": array of strings (concrete improvements, recommended frameworks, or extension ideas)
 - "difficulty": string ("EASY", "MEDIUM", or "HARD")
 
-Here is the JSON dataset to analyze:
+Dataset to analyze:
 ${datasetJson}
 
-Respond with a JSON object in this exact structure:
+Respond strictly with a JSON object in this exact structure:
 {
   "problems": [
     ...
@@ -242,13 +243,10 @@ function normalizeAnalyzedItem(
   modelUsed: string | null = null
 ): AnalyzedProblemOutputItem {
   const item = aiItem || {};
-  const rawSeq = item.sequence !== undefined && item.sequence !== null ? item.sequence : expectedSequence;
-  const seq = typeof rawSeq === 'number' ? rawSeq : parseInt(String(rawSeq), 10) || expectedSequence;
+  const seq = fallbackInput.sequence || fallbackInput.index || expectedSequence;
+  const order = seq;
 
-  const rawOrder = item.order !== undefined && item.order !== null ? item.order : seq;
-  const order = typeof rawOrder === 'number' ? rawOrder : parseInt(String(rawOrder), 10) || seq;
-
-  const rawPsId = item.problemStatementId || fallbackInput.problemStatementId;
+  const rawPsId = fallbackInput.problemStatementId || item.problemStatementId;
   const problemStatementId = rawPsId
     ? String(rawPsId).trim()
     : `PS${String(seq).padStart(3, '0')}`;
@@ -354,15 +352,20 @@ function generateFallbackResults(items: CsvProblemInputItem[]): AnalyzedProblemO
 }
 
 /**
- * Calls OpenRouter AI with fast fail-fast error handling
+ * Calls Google Gemini API with structured JSON output and candidate model fallback
  */
-async function callOpenRouter(prompt: string, apiKey: string, model: string): Promise<{ content: string; modelUsed: string }> {
+async function callGemini(
+  prompt: string,
+  apiKey: string,
+  preferredModel: string
+): Promise<{ content: string; modelUsed: string }> {
   const modelsToTry = [
-    model,
-    'anthropic/claude-sonnet-4.6',
-    '~anthropic/claude-sonnet-latest',
-    'openai/gpt-4o-mini',
-  ].filter((m, i, arr) => arr.indexOf(m) === i);
+    preferredModel,
+    'gemini-3.5-flash-lite',
+    'gemini-flash-lite-latest',
+    'gemini-3.5-flash',
+    'gemini-3.6-flash',
+  ].filter((m, i, arr) => Boolean(m) && arr.indexOf(m) === i);
 
   let lastError: Error | null = null;
   let lastStatus = 500;
@@ -372,29 +375,19 @@ async function callOpenRouter(prompt: string, apiKey: string, model: string): Pr
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s subrequest timeout
 
-      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent?key=${apiKey}`;
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'HTTP-Referer': 'https://hackathon-portal.local',
-          'X-Title': 'Hackathon Management Portal (Cloudflare Worker)',
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: currentModel,
-          messages: [
-            {
-              role: 'system',
-              content: 'You are an expert technical problem statement dataset analyzer. Output strict valid JSON matching the requested schema without markdown fences.',
-            },
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
-          temperature: 0.1,
-          max_tokens: 3500,
-          response_format: { type: 'json_object' },
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.1,
+            maxOutputTokens: 4000,
+          },
         }),
         signal: controller.signal,
       });
@@ -408,40 +401,43 @@ async function callOpenRouter(prompt: string, apiKey: string, model: string): Pr
         const classification = classifyError(res.status, cleanErr);
 
         if (res.status === 404) {
-          lastError = new Error(`OPENROUTER_MODEL_UNAVAILABLE: Model "${currentModel}" not available: ${cleanErr}`);
-          continue; // Try fallback candidate model
+          lastError = new Error(`MODEL_UNAVAILABLE: Model "${currentModel}" not found or unsupported: ${cleanErr}`);
+          continue; // Try next candidate model
         }
-        if (res.status === 402) {
-          lastError = new Error(`OPENROUTER_INSUFFICIENT_CREDITS: ${classification.cleanMessage}`);
-          continue; // Try lower-cost candidate model or fail fast
+        if (res.status === 429) {
+          lastError = new Error(`${classification.code}: ${classification.cleanMessage}`);
+          // Wait 1.5s and try next candidate model
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          continue;
         }
-        if (res.status === 401) {
-          throw new Error(`OPENROUTER_UNAUTHORIZED: ${classification.cleanMessage}`);
+        if (res.status === 400 || res.status === 401 || res.status === 403) {
+          throw new Error(`INVALID_API_KEY: ${classification.cleanMessage}`);
         }
         throw new Error(`${classification.code}: ${cleanErr}`);
       }
 
       const json: any = await res.json();
-      const choice = json.choices?.[0]?.message?.content;
-      if (!choice) {
-        throw new Error('OPENROUTER_INVALID_RESPONSE: OpenRouter returned an empty response.');
+      const candidate = json.candidates?.[0];
+      const rawText = candidate?.content?.parts?.[0]?.text;
+
+      if (!rawText) {
+        throw new Error('INVALID_AI_RESPONSE: Google Gemini returned an empty response candidate.');
       }
 
-      const modelUsed = json.model || currentModel;
-      return { content: choice, modelUsed };
+      return { content: rawText, modelUsed: currentModel };
     } catch (err: any) {
       const isAbort = err.name === 'AbortError';
-      const errMsg = isAbort ? 'OPENROUTER_TIMEOUT: OpenRouter request timed out after 20s.' : err.message;
+      const errMsg = isAbort ? 'TIMEOUT: Google Gemini request timed out after 20s.' : err.message;
       const classification = classifyError(lastStatus, errMsg);
       lastError = new Error(sanitizeError(classification.cleanMessage ? `${classification.code}: ${classification.cleanMessage}` : errMsg, apiKey));
 
-      if (!errMsg.includes('404') && !errMsg.includes('402')) {
-        break; // Fail fast on timeouts, auth, or network errors
+      if (!errMsg.includes('404') && !errMsg.includes('429') && !errMsg.includes('RATE_LIMITED')) {
+        break; // Fail fast on auth or fatal network errors
       }
     }
   }
 
-  throw lastError || new Error('OPENROUTER_GENERIC_ERROR: OpenRouter call failed.');
+  throw lastError || new Error('GEMINI_GENERIC_ERROR: Google Gemini call failed.');
 }
 
 export async function handleWorkerRequest(request: Request, env: Env): Promise<Response> {
@@ -457,12 +453,15 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
 
   // Health check endpoint
   if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
+    const hasGeminiKey = Boolean(env.GEMINI_API_KEY && env.GEMINI_API_KEY.length > 5);
     return new Response(
       JSON.stringify({
         status: 'healthy',
+        provider: 'google-gemini',
         service: 'hackathon-csv-ai-analyzer',
-        model: env.OPENROUTER_MODEL || DEFAULT_MODEL,
-        hasApiKey: Boolean(env.OPENROUTER_API_KEY && env.OPENROUTER_API_KEY.length > 5),
+        model: env.GEMINI_MODEL || DEFAULT_MODEL,
+        hasApiKey: hasGeminiKey,
+        hasGeminiKey,
         timestamp: new Date().toISOString(),
       }),
       {
@@ -472,17 +471,16 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
     );
   }
 
-  // Pre-flight AI Health Check endpoint (checks auth and credit status in < 500ms)
+  // Pre-flight AI Health Check endpoint (checks auth in < 500ms)
   if (request.method === 'POST' && (url.pathname === '/ai-health-check' || url.pathname === '/health-check-ai')) {
-    const apiKey = env.OPENROUTER_API_KEY || '';
+    const apiKey = env.GEMINI_API_KEY || '';
     if (!apiKey) {
       return new Response(
         JSON.stringify({
           healthy: false,
           authenticated: false,
-          creditsAvailable: false,
-          errorCode: 'OPENROUTER_UNAUTHORIZED',
-          error: 'OpenRouter API key is not configured on Cloudflare Worker secret.',
+          errorCode: 'INVALID_API_KEY',
+          error: 'GEMINI_API_KEY is not configured in Cloudflare Worker secrets.',
         }),
         {
           status: 200,
@@ -492,18 +490,16 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
     }
 
     try {
-      const authRes = await fetch('https://openrouter.ai/api/v1/auth/key', {
-        headers: { Authorization: `Bearer ${apiKey}` },
-      });
+      const authRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
       if (!authRes.ok) {
         const errText = await authRes.text().catch(() => '');
+        const classification = classifyError(authRes.status, errText);
         return new Response(
           JSON.stringify({
             healthy: false,
             authenticated: false,
-            creditsAvailable: false,
-            errorCode: 'OPENROUTER_UNAUTHORIZED',
-            error: sanitizeError(errText, apiKey),
+            errorCode: classification.code,
+            error: classification.cleanMessage,
           }),
           {
             status: 200,
@@ -512,15 +508,12 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
         );
       }
 
-      const authData: any = await authRes.json();
       return new Response(
         JSON.stringify({
           healthy: true,
           authenticated: true,
-          creditsAvailable: authData?.data?.usage !== undefined,
-          isFreeTier: Boolean(authData?.data?.is_free_tier),
-          label: authData?.data?.label,
-          model: env.OPENROUTER_MODEL || DEFAULT_MODEL,
+          provider: 'google-gemini',
+          model: env.GEMINI_MODEL || DEFAULT_MODEL,
         }),
         {
           status: 200,
@@ -532,8 +525,7 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
         JSON.stringify({
           healthy: false,
           authenticated: false,
-          creditsAvailable: false,
-          errorCode: 'OPENROUTER_NETWORK_ERROR',
+          errorCode: 'NETWORK_ERROR',
           error: sanitizeError(err.message, apiKey),
         }),
         {
@@ -563,8 +555,8 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
 
       const inputItems = body.questions as CsvProblemInputItem[];
       const totalItems = inputItems.length;
-      const model = env.OPENROUTER_MODEL || DEFAULT_MODEL;
-      const apiKey = env.OPENROUTER_API_KEY || '';
+      const model = env.GEMINI_MODEL || DEFAULT_MODEL;
+      const apiKey = env.GEMINI_API_KEY || '';
 
       // If no API key configured on worker, return structured fallback with clear note
       if (!apiKey) {
@@ -576,8 +568,8 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
             aiAnalyzedCount: 0,
             aiModelUsed: model,
             aiSuccess: false,
-            errorCode: 'OPENROUTER_UNAUTHORIZED',
-            aiError: 'OpenRouter API key is not configured on Cloudflare Worker secret.',
+            errorCode: 'INVALID_API_KEY',
+            aiError: 'GEMINI_API_KEY is not configured in Cloudflare Worker secrets.',
             problems: fallbackProblems,
           }),
           {
@@ -590,7 +582,7 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
       const allAnalyzedResults: AnalyzedProblemOutputItem[] = [];
       let aiSuccessCount = 0;
       let lastAiError: string | null = null;
-      let lastErrorCode: OpenRouterErrorCode | null = null;
+      let lastErrorCode: GeminiErrorCode | null = null;
       let lastModelUsed = model;
       let shouldStopBatch = false;
 
@@ -614,8 +606,8 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
           const chunkNumber = b + batchIdx + 1;
           const prompt = buildBatchPrompt(chunk);
           try {
-            const { content: aiResponseText, modelUsed } = await callOpenRouter(prompt, apiKey, model);
-            
+            const { content: aiResponseText, modelUsed } = await callGemini(prompt, apiKey, model);
+
             const cleaned = aiResponseText
               .replace(/^```(?:json)?\s*/i, '')
               .replace(/\s*```\s*$/i, '')
@@ -631,7 +623,7 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
               } else if (parsedJson && Array.isArray(parsedJson.items)) {
                 parsedJson = parsedJson.items;
               } else {
-                throw new Error('AI response structure is not an array.');
+                throw new Error('STRUCTURED_OUTPUT_ERROR: Gemini response is missing problems array.');
               }
             }
 
@@ -650,7 +642,7 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
               modelUsed,
             };
           } catch (err: any) {
-            console.error(`[Worker] Chunk ${chunkNumber} AI call failed:`, err.message);
+            console.error(`[Worker] Chunk ${chunkNumber} Gemini AI call failed:`, err.message);
             const classification = classifyError(500, err.message);
             return {
               success: false,
@@ -671,7 +663,7 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
           } else if (output.error) {
             lastAiError = output.error;
             lastErrorCode = output.errorCode;
-            if (output.errorCode === 'OPENROUTER_INSUFFICIENT_CREDITS' || output.errorCode === 'OPENROUTER_UNAUTHORIZED') {
+            if (output.errorCode === 'INVALID_API_KEY' || output.errorCode === 'QUOTA_EXCEEDED') {
               shouldStopBatch = true;
             }
           }
@@ -679,8 +671,8 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
         }
       }
 
-      // Sort strictly by order / sequence
-      allAnalyzedResults.sort((a, b) => a.order - b.order || a.sequence - b.sequence);
+      // Sort strictly by sequence
+      allAnalyzedResults.sort((a, b) => a.sequence - b.sequence);
 
       const overallAiSuccess = aiSuccessCount === totalItems && !lastAiError;
 
@@ -729,3 +721,4 @@ export async function handleWorkerRequest(request: Request, env: Env): Promise<R
 export default {
   fetch: handleWorkerRequest,
 };
+

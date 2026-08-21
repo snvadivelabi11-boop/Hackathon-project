@@ -742,12 +742,10 @@ export function generateClientFallbackResponse(
     success: true,
     totalProblems: validQuestions.length,
     aiAnalyzedCount: 0,
-    aiModelUsed: '~anthropic/claude-sonnet-latest',
+    aiModelUsed: 'gemini-3.5-flash-lite',
     aiSuccess: false,
     errorCode: resolvedCode,
-    aiError: customError || (isCreditError
-      ? 'OpenRouter AI analysis is unavailable because the configured OpenRouter account has insufficient credits.'
-      : 'Cloudflare Worker backend offline or unreachable. Deterministic local validation applied.'),
+    aiError: customError || 'Google Gemini AI service temporarily unavailable. Deterministic local validation applied.',
     problems: validQuestions.map((item, idx) => {
       const seq = item.sequence ?? idx + 1;
       const docId = item.problemStatementId || `PS${String(seq).padStart(3, '0')}`;
@@ -780,7 +778,7 @@ export function generateClientFallbackResponse(
 }
 
 /**
- * Calls Cloudflare Worker backend to perform Claude OpenRouter AI analysis on parsed CSV questions
+ * Calls Cloudflare Worker backend to perform Google Gemini AI analysis on parsed CSV questions
  */
 export async function requestCsvAiAnalysis(
   validQuestions: AnalyzedQuestionItem[],
@@ -823,7 +821,7 @@ export async function requestCsvAiAnalysis(
       const chunkCount = Math.ceil(validQuestions.length / 5);
       onProgress?.(
         currentProgress,
-        `Claude AI analyzing ${validQuestions.length} statements (${chunkCount} concurrent chunk${chunkCount > 1 ? 's' : ''})...`
+        `Google Gemini AI analyzing ${validQuestions.length} statements (${chunkCount} concurrent chunk${chunkCount > 1 ? 's' : ''})...`
       );
     }
   }, 1500);
@@ -875,9 +873,9 @@ export async function requestCsvAiAnalysis(
     clearTimeout(timeoutId);
     const isTimeout = workerErr.name === 'AbortError';
     const errorMsg = isTimeout
-      ? 'OpenRouter AI analysis timed out after 35s. Deterministic local validation applied.'
+      ? 'Google Gemini AI analysis timed out after 35s. Deterministic local validation applied.'
       : (workerErr.message || 'Cloudflare Worker fetch error');
-    const errorCode = isTimeout ? 'OPENROUTER_TIMEOUT' : 'OPENROUTER_NETWORK_ERROR';
+    const errorCode = isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR';
     console.warn('[CsvAnalyzer] Cloudflare Worker fetch error, applying fallback:', errorMsg);
     return generateClientFallbackResponse(validQuestions, errorMsg, errorCode);
   }

@@ -223,18 +223,18 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
 
           if (realAiCount === localResult.summary.validQuestions && realAiCount > 0) {
             setAiStatus('Completed');
-            message.success(`AI Analysis Completed: ${realAiCount} problem statements analyzed by ${aiResponse.aiModelUsed || 'AI'}.`);
+            message.success(`Google Gemini AI Analysis Completed: ${realAiCount} problem statements analyzed by ${aiResponse.aiModelUsed || 'Gemini 3.5 Flash Lite'}.`);
           } else if (realAiCount > 0) {
             setAiStatus('Partial');
-            message.info(`AI Analysis Partial: ${realAiCount} / ${localResult.summary.validQuestions} problem statements analyzed by AI.`);
+            message.info(`Google Gemini AI Analysis Partial: ${realAiCount} / ${localResult.summary.validQuestions} problem statements analyzed.`);
           } else {
             setAiStatus('Failed');
-            message.warning(`AI unavailable — local validation used (${aiResponse.aiError || 'OpenRouter credits required'}).`);
+            message.warning(`Google Gemini AI unavailable — local validation used (${aiResponse.aiError || 'Service issue'}).`);
           }
         }
       } catch (err: any) {
-        console.warn('[CsvAnalyzer] AI call failed, proceeding with local analysis:', err);
-        setAiError(err.message || 'AI service temporarily unavailable.');
+        console.warn('[CsvAnalyzer] Gemini call failed, proceeding with local analysis:', err);
+        setAiError(err.message || 'Gemini AI service temporarily unavailable.');
         setAiStatus('Failed');
         setAiProgress(100);
         setAnalysisResult({
@@ -263,7 +263,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
     setAiStatus('Processing');
     setAiError(null);
     setAiProgress(15);
-    setAiProgressText(`Retrying Claude AI analysis on ${analysisResult.validItemsToSave.length} problem statements...`);
+    setAiProgressText(`Running Google Gemini AI analysis on ${analysisResult.validItemsToSave.length} problem statements...`);
 
     try {
       const aiResponse = await requestCsvAiAnalysis(
@@ -302,20 +302,20 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
 
         if (realAiCount === analysisResult.summary.validQuestions && realAiCount > 0) {
           setAiStatus('Completed');
-          message.success(`AI Analysis Completed: ${realAiCount} problem statements analyzed by ${aiResponse.aiModelUsed || 'AI'}.`);
+          message.success(`Google Gemini AI Analysis Completed: ${realAiCount} problem statements analyzed by ${aiResponse.aiModelUsed || 'Gemini 3.5 Flash Lite'}.`);
         } else if (realAiCount > 0) {
           setAiStatus('Partial');
-          message.info(`AI Analysis Partial: ${realAiCount} / ${analysisResult.summary.validQuestions} problem statements analyzed by AI.`);
+          message.info(`Google Gemini AI Analysis Partial: ${realAiCount} / ${analysisResult.summary.validQuestions} problem statements analyzed.`);
         } else {
           setAiStatus('Failed');
-          message.warning(`AI unavailable — local validation used (${aiResponse.aiError || 'OpenRouter credits required'}).`);
+          message.warning(`Google Gemini AI unavailable — local validation used (${aiResponse.aiError || 'Service issue'}).`);
         }
       }
     } catch (err: any) {
-      setAiError(err.message || 'AI review failed.');
+      setAiError(err.message || 'Gemini review failed.');
       setAiStatus('Failed');
       setAiProgress(100);
-      message.error(`AI review failed: ${err.message}`);
+      message.error(`Gemini review failed: ${err.message}`);
     } finally {
       setAiReviewing(false);
       setStep(3);
@@ -724,7 +724,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
           <div style={{ textAlign: 'center', padding: '40px 16px' }}>
             <RobotOutlined style={{ fontSize: 56, color: '#7c3aed', marginBottom: 16 }} />
             <Title level={4} style={{ color: '#0f172a', marginBottom: 8 }}>
-              Running Claude AI Problem Statement Analysis...
+              Running Google Gemini AI Problem Statement Analysis...
             </Title>
             <Paragraph type="secondary" style={{ maxWidth: 520, margin: '0 auto 20px', minHeight: 40 }}>
               {aiProgressText}
@@ -744,9 +744,6 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
           const totalValid = analysisResult.summary.validQuestions || 0;
           const isPartial = realAiCount > 0 && realAiCount < totalValid;
           const isFullSuccess = realAiCount === totalValid && totalValid > 0;
-          const isInsufficientCredits = analysisResult.aiAnalysisError?.includes('402') ||
-            analysisResult.aiAnalysisError?.includes('OPENROUTER_INSUFFICIENT_CREDITS') ||
-            analysisResult.aiErrorCode === 'OPENROUTER_INSUFFICIENT_CREDITS';
 
           return (
             <div>
@@ -757,7 +754,7 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
                   {aiStatus === 'Processing' && <Tag icon={<SyncOutlined spin />} color="processing">AI ANALYSIS RUNNING</Tag>}
                   {isFullSuccess && (
                     <Tag icon={<CheckCircleOutlined />} color="success">
-                      AI ANALYSIS COMPLETED ({analysisResult.aiModelUsed || 'AI Model'})
+                      AI ANALYSIS COMPLETED ({analysisResult.aiModelUsed || 'Gemini 3.5 Flash Lite'})
                     </Tag>
                   )}
                   {isPartial && (
@@ -826,9 +823,9 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
                   message={
                     <Space>
                       <RobotOutlined style={{ color: '#7c3aed' }} />
-                      <span style={{ fontWeight: 700 }}>AI Problem Analysis Completed:</span>
+                      <span style={{ fontWeight: 700 }}>Google Gemini AI Analysis Completed:</span>
                       <span>
-                        All {realAiCount} problem statements analyzed and ordered with {analysisResult.aiModelUsed || 'AI'}. Ready to save as DRAFT.
+                        All {realAiCount} problem statements analyzed and ordered with {analysisResult.aiModelUsed || 'Gemini 3.5 Flash Lite'}. Ready to save as DRAFT.
                       </span>
                     </Space>
                   }
@@ -840,8 +837,8 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
 
               {isPartial && (
                 <Alert
-                  message={`AI Analysis Partial (${realAiCount} / ${totalValid} Analyzed)`}
-                  description={`Successfully analyzed ${realAiCount} problem statements with Claude AI. Remaining ${totalValid - realAiCount} statements were validated locally due to credit limits. You can add credits and retry.`}
+                  message={`Google Gemini AI Analysis Partial (${realAiCount} / ${totalValid} Analyzed)`}
+                  description={`Successfully analyzed ${realAiCount} problem statements with Google Gemini AI. Remaining ${totalValid - realAiCount} statements were validated locally. You can click Retry AI to analyze the remainder.`}
                   type="warning"
                   showIcon
                   action={
@@ -855,12 +852,8 @@ export const CsvProblemAnalyzerModal: React.FC<CsvProblemAnalyzerModalProps> = (
 
               {analysisResult.aiAnalysisPerformed && !isFullSuccess && !isPartial && (
                 <Alert
-                  message={isInsufficientCredits ? 'OpenRouter AI Analysis Unavailable — Insufficient Credits' : 'AI Analysis Unavailable — Local Validation Used'}
-                  description={
-                    isInsufficientCredits
-                      ? `OpenRouter AI analysis is unavailable because the configured OpenRouter account has insufficient credits. Deterministic local validation was applied and preserved all ${totalValid} problem statements with zero data loss. Please add credits at https://openrouter.ai/settings/credits and click "Retry AI".`
-                      : `OpenRouter AI service error (${analysisResult.aiAnalysisError || 'Service unavailable'}). Deterministic local validation was applied and preserved all ${totalValid} problem statements with zero data loss.`
-                  }
+                  message="Google Gemini AI Unavailable — Local Validation Used"
+                  description={`Google Gemini AI service notice (${analysisResult.aiAnalysisError || 'Service temporarily unreachable'}). Deterministic local validation was applied and preserved all ${totalValid} problem statements with zero data loss.`}
                   type="warning"
                   showIcon
                   action={
