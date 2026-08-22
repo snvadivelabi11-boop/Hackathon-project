@@ -497,7 +497,7 @@ export const SubmissionsPage: React.FC = () => {
                             {r1Sub ? <Tag color="green">✓ Submitted</Tag> : <Tag color="default">Pending</Tag>}
                           </div>
                         }
-                        style={{ background: '#f8fafc', height: '100%', borderRadius: 10 }}
+                        style={{ background: '#f8fafc', minHeight: '100%', borderRadius: 10 }}
                       >
                         {r1Sub ? (
                           <div>
@@ -506,138 +506,109 @@ export const SubmissionsPage: React.FC = () => {
                                 ? r1Sub.files
                                 : (r1Sub.fileUrl ? [{ fileUrl: r1Sub.fileUrl, fileName: r1Sub.fileName || 'Architecture File', fileSizeBytes: r1Sub.fileSizeBytes }] : []);
 
-                              if (r1Files.length > 1) {
-                                return (
-                                  <div>
-                                    <div style={{ marginBottom: 10 }}>
-                                      <Tag color="cyan" style={{ fontWeight: 600 }}>{r1Files.length} Architecture Images</Tag>
-                                      <div style={{ fontSize: '11px', color: '#64748b', marginTop: 4 }}>
-                                        Uploaded: {formatISTDateTime(r1Sub.submittedAt)}
-                                      </div>
-                                    </div>
-
-                                    <Row gutter={[8, 8]} style={{ marginBottom: 12 }}>
-                                      {r1Files.map((file, fIdx) => (
-                                        <Col span={r1Files.length <= 2 ? 12 : 8} key={fIdx}>
-                                          <Card
-                                            size="small"
-                                            style={{ borderRadius: 6, background: '#fff', border: '1px solid #e2e8f0', overflow: 'hidden' }}
-                                            bodyStyle={{ padding: 6 }}
-                                          >
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                                              <Text strong style={{ fontSize: '11px' }}>Image {file.slot || fIdx + 1}</Text>
-                                            </div>
-                                            <div
-                                              style={{
-                                                borderRadius: 4,
-                                                overflow: 'hidden',
-                                                background: '#0f172a',
-                                                height: 75,
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                justifyContent: 'center',
-                                                cursor: 'pointer',
-                                                marginBottom: 6,
-                                              }}
-                                              onClick={() => openGalleryModal(r1Files, fIdx)}
-                                            >
-                                              <img
-                                                src={getSubmissionViewUrl(file)}
-                                                alt={`Img ${fIdx + 1}`}
-                                                style={{ maxHeight: 75, maxWidth: '100%', objectFit: 'contain' }}
-                                              />
-                                            </div>
-                                            <Text strong ellipsis style={{ display: 'block', fontSize: '11px', marginBottom: 4 }} title={file.fileName}>
-                                              {file.fileName || `Image ${file.slot || fIdx + 1}`}
-                                            </Text>
-                                            <Space size="small" style={{ width: '100%', justifyContent: 'space-between' }}>
-                                              <Button
-                                                size="small"
-                                                type="primary"
-                                                icon={<EyeOutlined />}
-                                                onClick={() => openGalleryModal(r1Files, fIdx)}
-                                                style={{ fontSize: '11px', padding: '0 6px', height: 24, background: '#1677ff' }}
-                                              >
-                                                VIEW
-                                              </Button>
-                                              <Button
-                                                size="small"
-                                                icon={<DownloadOutlined />}
-                                                href={getSubmissionDownloadUrl(file)}
-                                                target="_blank"
-                                                download={file.fileName || true}
-                                                style={{ fontSize: '11px', padding: '0 6px', height: 24 }}
-                                              >
-                                                DL
-                                              </Button>
-                                            </Space>
-                                          </Card>
-                                        </Col>
-                                      ))}
-                                    </Row>
-                                  </div>
-                                );
+                              if (r1Files.length === 0) {
+                                return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No architecture image found" />;
                               }
 
-                              const singleFile = r1Files[0] || { fileUrl: r1Sub.fileUrl, fileName: r1Sub.fileName };
                               return (
                                 <div>
-                                  <div style={{ marginBottom: 12 }}>
-                                    <Space>
-                                      {getFileIcon(singleFile.fileName || r1Sub.fileName)}
-                                      <Text strong ellipsis style={{ maxWidth: 180 }}>
-                                        {singleFile.fileName || r1Sub.fileName || 'Architecture File'}
-                                      </Text>
-                                    </Space>
-                                    <div style={{ fontSize: '11px', color: '#64748b', marginTop: 4 }}>
+                                  <div style={{ marginBottom: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <Tag color="cyan" style={{ fontWeight: 700, fontSize: '11px' }}>
+                                      {r1Files.length} {r1Files.length === 1 ? 'Architecture Image' : 'Architecture Images'}
+                                    </Tag>
+                                    <div style={{ fontSize: '11px', color: '#64748b' }}>
                                       Uploaded: {formatISTDateTime(r1Sub.submittedAt)}
                                     </div>
                                   </div>
 
-                                  {/* Image Thumbnail Preview if supported */}
-                                  {isImageFile(singleFile.fileName || r1Sub.fileName) && (singleFile.fileUrl || r1Sub.fileUrl) && (
-                                    <div
-                                      style={{
-                                        marginBottom: 12,
-                                        borderRadius: 8,
-                                        overflow: 'hidden',
-                                        maxHeight: 120,
-                                        background: '#000',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        cursor: 'pointer',
-                                      }}
-                                      onClick={() => openGalleryModal(r1Files, 0)}
-                                    >
-                                      <img
-                                        src={getSubmissionViewUrl(singleFile)}
-                                        alt="Architecture"
-                                        style={{ width: '100%', height: '120px', objectFit: 'cover' }}
-                                      />
-                                    </div>
-                                  )}
+                                  <div
+                                    style={{
+                                      display: 'grid',
+                                      gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))',
+                                      gap: '8px',
+                                      marginBottom: 12,
+                                      width: '100%',
+                                    }}
+                                  >
+                                    {r1Files.map((file, fIdx) => (
+                                      <Card
+                                        key={fIdx}
+                                        size="small"
+                                        style={{
+                                          borderRadius: 8,
+                                          background: '#fff',
+                                          border: '1px solid #e2e8f0',
+                                          boxShadow: '0 1px 2px rgba(0,0,0,0.03)',
+                                        }}
+                                        bodyStyle={{ padding: 6 }}
+                                      >
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                                          <Text strong style={{ fontSize: '11px' }}>
+                                            Image {file.order || file.slot || fIdx + 1}
+                                          </Text>
+                                          {file.fileSizeBytes ? (
+                                            <Text type="secondary" style={{ fontSize: '10px' }}>
+                                              {(file.fileSizeBytes / 1024).toFixed(0)} KB
+                                            </Text>
+                                          ) : null}
+                                        </div>
 
-                                  <Space wrap style={{ marginBottom: 16 }}>
-                                    <Button
-                                      size="small"
-                                      type="primary"
-                                      icon={<EyeOutlined />}
-                                      onClick={() => openGalleryModal(r1Files, 0)}
-                                      style={{ background: '#1677ff' }}
-                                    >
-                                      VIEW FILE
-                                    </Button>
-                                    <Button
-                                      size="small"
-                                      icon={<DownloadOutlined />}
-                                      href={getSubmissionDownloadUrl(singleFile)}
-                                      target="_blank"
-                                      download={singleFile.fileName || true}
-                                    >
-                                      DOWNLOAD
-                                    </Button>
-                                  </Space>
+                                        <div
+                                          style={{
+                                            borderRadius: 4,
+                                            overflow: 'hidden',
+                                            background: '#0f172a',
+                                            height: 75,
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            cursor: 'pointer',
+                                            marginBottom: 6,
+                                          }}
+                                          onClick={() => openGalleryModal(r1Files, fIdx)}
+                                          title="Click to view in gallery"
+                                        >
+                                          <img
+                                            src={getSubmissionViewUrl(file)}
+                                            alt={`Img ${file.order || file.slot || fIdx + 1}`}
+                                            style={{ maxHeight: 75, maxWidth: '100%', objectFit: 'contain' }}
+                                            loading="lazy"
+                                          />
+                                        </div>
+
+                                        <Text
+                                          strong
+                                          ellipsis
+                                          style={{ display: 'block', fontSize: '11px', marginBottom: 6 }}
+                                          title={file.fileName || `Image ${file.order || file.slot || fIdx + 1}`}
+                                        >
+                                          {file.fileName || `Image ${file.order || file.slot || fIdx + 1}`}
+                                        </Text>
+
+                                        <Space size={4} style={{ width: '100%', justifyContent: 'space-between' }}>
+                                          <Button
+                                            size="small"
+                                            type="primary"
+                                            icon={<EyeOutlined />}
+                                            onClick={() => openGalleryModal(r1Files, fIdx)}
+                                            style={{ fontSize: '11px', padding: '0 6px', height: 24, background: '#1677ff' }}
+                                          >
+                                            VIEW
+                                          </Button>
+                                          <Button
+                                            size="small"
+                                            icon={<DownloadOutlined />}
+                                            href={getSubmissionDownloadUrl(file)}
+                                            target="_blank"
+                                            download={file.fileName || true}
+                                            style={{ fontSize: '11px', padding: '0 6px', height: 24 }}
+                                          >
+                                            DL
+                                          </Button>
+                                        </Space>
+                                      </Card>
+                                    ))}
+                                  </div>
                                 </div>
                               );
                             })()}
